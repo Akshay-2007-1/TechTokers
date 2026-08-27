@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  admitRun,
+  budgetDenialMessage,
+  budgetStatus,
+  unlimitedBudgetPolicy,
+} from "./budget-service.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -68,6 +74,7 @@ export class AgentService {
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
+      budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -96,6 +103,7 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -112,6 +120,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.budgetEvents = database.budgetEvents.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -150,6 +159,19 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  getBudget(agentId: string) {
+    const agent = this.getAgent(agentId);
+    return budgetStatus(this.store.snapshot(), agent);
+  }
+
+  getBudgetEvents(agentId: string) {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .budgetEvents.filter((event) => event.agentId === agentId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -170,6 +192,8 @@ export class AgentService {
       output: null,
       error: null,
       usage: null,
+      budgetReserved: false,
+      runtimeInvoked: false,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -182,7 +206,7 @@ export class AgentService {
       content: prompt,
       createdAt: timestamp,
     };
-    const agentAtStart = await this.store.mutate((database) => {
+    const admission = await this.store.mutate((database) => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -193,14 +217,23 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const decision = admitRun(database, storedAgent, run, timestamp);
       database.runs.push(run);
       database.messages.push(message);
+      if (!decision.admitted) {
+        run.status = "denied";
+        run.error = budgetDenialMessage(decision.reason, decision.status);
+        run.completedAt = timestamp;
+        return { agent: null, denied: true };
+      }
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return snapshot;
+      return { agent: snapshot, denied: false };
     });
+    if (admission.denied || !admission.agent) return { run, message };
+    const agentAtStart = admission.agent;
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -238,6 +271,7 @@ export class AgentService {
       if (storedRun) {
         storedRun.status = "running";
         storedRun.startedAt = now();
+        storedRun.runtimeInvoked = true;
       }
     });
     try {
