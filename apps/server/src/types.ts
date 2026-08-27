@@ -8,6 +8,7 @@ export interface Agent {
   description: string;
   instructions: string;
   budgetPolicy: AgentBudgetPolicy;
+  maxPromptChars: number | null;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -89,6 +90,7 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   budgetPolicy?: AgentBudgetPolicy | undefined;
+  maxPromptChars?: number | null | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -96,6 +98,7 @@ export interface UpdateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   budgetPolicy?: AgentBudgetPolicy | undefined;
+  maxPromptChars?: number | null | undefined;
 }
 
 export interface RunnerResult {

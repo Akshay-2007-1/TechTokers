@@ -20,6 +20,7 @@ export interface Agent {
   description: string;
   instructions: string;
   budgetPolicy: AgentBudgetPolicy;
+  maxPromptChars: number | null;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;

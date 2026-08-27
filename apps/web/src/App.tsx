@@ -22,6 +22,7 @@ const emptyForm = {
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
   maxRuns: "",
   maxTotalTokens: "",
+  maxPromptChars: "",
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
@@ -37,6 +38,16 @@ function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
   return {
     maxRuns: limit("Maximum Runs", form.maxRuns),
     maxTotalTokens: limit("Total-token budget", form.maxTotalTokens),
+  };
+}
+
+function agentPayloadFromForm(form: typeof emptyForm) {
+  return {
+    name: form.name,
+    description: form.description,
+    instructions: form.instructions,
+    budgetPolicy: budgetPolicyFromForm(form),
+    maxPromptChars: form.maxPromptChars === "" ? null : Number(form.maxPromptChars),
   };
 }
 
@@ -120,6 +131,9 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+  const promptCharacterCount = Array.from(prompt).length;
+  const promptLimit = selected?.maxPromptChars ?? null;
+  const promptIsTooLong = promptLimit !== null && promptCharacterCount > promptLimit;
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -197,6 +211,8 @@ export default function App() {
           selected.budgetPolicy.maxTotalTokens === null
             ? ""
             : String(selected.budgetPolicy.maxTotalTokens),
+        maxPromptChars:
+          selected.maxPromptChars === null ? "" : String(selected.maxPromptChars),
       });
     }
   }, [selected]);
@@ -210,12 +226,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent({
-        name: form.name,
-        description: form.description,
-        instructions: form.instructions,
-        budgetPolicy: budgetPolicyFromForm(form),
-      });
+      const { agent } = await api.createAgent(agentPayloadFromForm(form));
       await refreshAgents();
       setSelectedId(agent.id);
       setShowCreate(false);
@@ -233,12 +244,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, {
-        name: form.name,
-        description: form.description,
-        instructions: form.instructions,
-        budgetPolicy: budgetPolicyFromForm(form),
-      });
+      await api.updateAgent(selected.id, agentPayloadFromForm(form));
       await Promise.all([refreshAgents(), refreshBudget(selected.id)]);
       setShowSettings(false);
     } catch (reason) {
@@ -553,6 +559,20 @@ export default function App() {
                       maxLength={500}
                     />
                   </label>
+                  <label>
+                    Maximum prompt length
+                    <input
+                      type="number"
+                      min={1}
+                      max={50_000}
+                      step={1}
+                      placeholder="Unlimited"
+                      value={form.maxPromptChars}
+                      onChange={(event) =>
+                        setForm({ ...form, maxPromptChars: event.target.value })
+                      }
+                    />
+                  </label>
                 </div>
                 <label>
                   System instructions
@@ -663,7 +683,10 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"} · {promptLimit === null
+                      ? "No prompt limit"
+                      : promptCharacterCount + " / " + promptLimit + " characters"}
+                    {promptIsTooLong ? " · Prompt exceeds this Agent's limit" : ""}
                   </span>
                   <button
                     className="send-button"
@@ -671,6 +694,7 @@ export default function App() {
                       !prompt.trim() ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
+                      promptIsTooLong ||
                       (activeRun != null && ["queued", "running"].includes(activeRun.status))
                     }
                     aria-label="Send message"
@@ -735,6 +759,20 @@ export default function App() {
                   setForm({ ...form, description: event.target.value })
                 }
                 maxLength={500}
+              />
+            </label>
+            <label>
+              Maximum prompt length
+              <input
+                type="number"
+                min={1}
+                max={50_000}
+                step={1}
+                placeholder="Unlimited"
+                value={form.maxPromptChars}
+                onChange={(event) =>
+                  setForm({ ...form, maxPromptChars: event.target.value })
+                }
               />
             </label>
             <label>

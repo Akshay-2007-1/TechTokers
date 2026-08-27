@@ -31,6 +31,7 @@ export class JsonStore {
         agents: parsed.agents.map((agent) => ({
           ...agent,
           budgetPolicy: agent.budgetPolicy ?? { maxRuns: null, maxTotalTokens: null },
+          maxPromptChars: agent.maxPromptChars ?? null,
         })),
         messages: Array.isArray(parsed.messages) ? parsed.messages : [],
         runs: parsedRuns.map((run) => ({

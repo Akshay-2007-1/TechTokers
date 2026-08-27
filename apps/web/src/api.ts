@@ -41,6 +41,7 @@ export const api = {
     description: string;
     instructions: string;
     budgetPolicy: AgentBudgetPolicy;
+    maxPromptChars: number | null;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -48,7 +49,13 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string; budgetPolicy: AgentBudgetPolicy },
+    body: {
+      name: string;
+      description: string;
+      instructions: string;
+      budgetPolicy: AgentBudgetPolicy;
+      maxPromptChars: number | null;
+    },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",

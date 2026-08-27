@@ -10,9 +10,11 @@ import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
   calls = 0;
+  readonly requests: RunnerRequest[] = [];
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
     this.calls += 1;
+    this.requests.push(request);
     return {
       output: "Completed: " + request.prompt,
       threadId: request.threadId ?? "fake-thread",
@@ -262,5 +264,36 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("allows a prompt at an Agent's exact limit", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Prompt limited",
+      maxPromptChars: 5,
+    });
+
+    const { run } = await service.sendMessage(agent.id, "12345");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(runner.requests).toHaveLength(1);
+  });
+
+  it("rejects an over-limit prompt before invoking Codex", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Prompt limited",
+      maxPromptChars: 5,
+    });
+
+    await expect(service.sendMessage(agent.id, "123456")).rejects.toMatchObject({
+      statusCode: 422,
+    });
+
+    expect(runner.requests).toHaveLength(0);
+    expect(service.getRuns(agent.id)).toHaveLength(0);
+    expect(service.getMessages(agent.id)).toHaveLength(0);
   });
 });

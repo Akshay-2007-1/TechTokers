@@ -75,6 +75,7 @@ export class AgentService {
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
+      maxPromptChars: input.maxPromptChars ?? null,
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -104,6 +105,7 @@ export class AgentService {
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
+      if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -216,6 +218,17 @@ export class AgentService {
       }
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
+      }
+      if (
+        storedAgent.maxPromptChars !== null &&
+        Array.from(prompt).length > storedAgent.maxPromptChars
+      ) {
+        throw new HttpError(
+          422,
+          "Prompt exceeds this Agent's " +
+            storedAgent.maxPromptChars +
+            "-character limit",
+        );
       }
       const decision = admitRun(database, storedAgent, run, timestamp);
       database.runs.push(run);
