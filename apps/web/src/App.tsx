@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentBudgetPolicy,
+  AgentBudgetStatus,
+  AgentRun,
+  Message,
+  SystemInfo,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -13,7 +20,14 @@ const emptyForm = {
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
+  maxRuns: "",
+  maxTotalTokens: "",
 };
+
+function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
+  const limit = (value: string) => (value.trim() === "" ? null : Number(value));
+  return { maxRuns: limit(form.maxRuns), maxTotalTokens: limit(form.maxTotalTokens) };
+}
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -35,6 +49,39 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function BudgetFields({
+  form,
+  setForm,
+}: {
+  form: typeof emptyForm;
+  setForm: (next: typeof emptyForm) => void;
+}) {
+  return (
+    <div className="form-grid budget-fields">
+      <label>
+        Maximum Runs (optional)
+        <input
+          type="number"
+          min="0"
+          max="1000000"
+          value={form.maxRuns}
+          onChange={(event) => setForm({ ...form, maxRuns: event.target.value })}
+        />
+      </label>
+      <label>
+        Total-token budget (optional)
+        <input
+          type="number"
+          min="0"
+          max="1000000000"
+          value={form.maxTotalTokens}
+          onChange={(event) => setForm({ ...form, maxTotalTokens: event.target.value })}
+        />
+      </label>
+    </div>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -45,6 +92,7 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [budget, setBudget] = useState<AgentBudgetStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -77,6 +125,11 @@ export default function App() {
     }
   }, []);
 
+  const refreshBudget = useCallback(async (agentId: string) => {
+    const result = await api.budget(agentId);
+    if (mountedRef.current && selectedIdRef.current === agentId) setBudget(result.budget);
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -101,9 +154,10 @@ export default function App() {
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
+      setBudget(null);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
+    void Promise.all([refreshMessages(selectedId), api.runs(selectedId), refreshBudget(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -117,7 +171,7 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshBudget, refreshMessages, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -125,6 +179,11 @@ export default function App() {
         name: selected.name,
         description: selected.description,
         instructions: selected.instructions,
+        maxRuns: selected.budgetPolicy.maxRuns === null ? "" : String(selected.budgetPolicy.maxRuns),
+        maxTotalTokens:
+          selected.budgetPolicy.maxTotalTokens === null
+            ? ""
+            : String(selected.budgetPolicy.maxTotalTokens),
       });
     }
   }, [selected]);
@@ -138,7 +197,12 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent(form);
+      const { agent } = await api.createAgent({
+        name: form.name,
+        description: form.description,
+        instructions: form.instructions,
+        budgetPolicy: budgetPolicyFromForm(form),
+      });
       await refreshAgents();
       setSelectedId(agent.id);
       setShowCreate(false);
@@ -156,7 +220,12 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, form);
+      await api.updateAgent(selected.id, {
+        name: form.name,
+        description: form.description,
+        instructions: form.instructions,
+        budgetPolicy: budgetPolicyFromForm(form),
+      });
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
@@ -211,7 +280,7 @@ export default function App() {
         const result = await api.run(runId);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshBudget(agentId)]);
           return;
         }
       }
@@ -427,6 +496,15 @@ export default function App() {
               </div>
             </header>
 
+            {budget && (
+              <section className="budget-summary" aria-label="Agent budget">
+                <strong>Budget</strong>
+                <span>
+                  {budget.runsUsed} / {budget.policy.maxRuns ?? "∞"} Runs · {budget.tokensUsed} / {budget.policy.maxTotalTokens ?? "∞"} tokens
+                </span>
+              </section>
+            )}
+
             {showSettings && (
               <form className="settings-panel" onSubmit={saveAgent}>
                 <div className="settings-title">
@@ -468,6 +546,7 @@ export default function App() {
                     maxLength={10_000}
                   />
                 </label>
+                <BudgetFields form={form} setForm={setForm} />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -532,9 +611,9 @@ export default function App() {
                     </div>
                   </article>
                 )}
-                {activeRun?.status === "failed" && (
+                {(activeRun?.status === "failed" || activeRun?.status === "denied") && (
                   <article className="run-error">
-                    <strong>Run failed</strong>
+                    <strong>{activeRun.status === "denied" ? "Run denied" : "Run failed"}</strong>
                     <span>{activeRun.error}</span>
                   </article>
                 )}
@@ -650,6 +729,7 @@ export default function App() {
                 maxLength={10_000}
               />
             </label>
+            <BudgetFields form={form} setForm={setForm} />
             <div className="modal-footer">
               <button
                 type="button"

@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRun, Message, SystemInfo } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -40,6 +40,7 @@ export const api = {
     name: string;
     description: string;
     instructions: string;
+    budgetPolicy: AgentBudgetPolicy;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -47,7 +48,7 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string },
+    body: { name: string; description: string; instructions: string; budgetPolicy: AgentBudgetPolicy },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
@@ -69,6 +70,8 @@ export const api = {
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
+  budget: (id: string) =>
+    request<{ budget: AgentBudgetStatus }>("/api/agents/" + id + "/budget"),
   sendMessage: (id: string, content: string) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
