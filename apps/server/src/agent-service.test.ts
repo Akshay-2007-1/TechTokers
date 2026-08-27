@@ -9,11 +9,14 @@ import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
+  calls = 0;
+
   async run(request: RunnerRequest): Promise<RunnerResult> {
+    this.calls += 1;
     return {
       output: "Completed: " + request.prompt,
       threadId: request.threadId ?? "fake-thread",
-      usage: { inputTokens: 12, outputTokens: 5 },
+      usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 5 },
     };
   }
   async cancel(): Promise<boolean> {
@@ -107,6 +110,120 @@ describe("Agent lifecycle", () => {
     if (accepted?.status === "fulfilled") {
       await expect.poll(() => service.getRun(accepted.value.run.id).status).toBe("completed");
     }
+  });
+
+  it("keeps Agents without a budget policy unlimited", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Unlimited" });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    const second = await service.sendMessage(agent.id, "second");
+    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
+    expect(runner.calls).toBe(2);
+    expect(service.getBudget(agent.id)).toMatchObject({
+      runsUsed: 2,
+      tokensUsed: 34,
+      policy: { maxRuns: null, maxTotalTokens: null },
+    });
+  });
+
+  it("denies a Run before Runtime invocation when maxRuns is exhausted", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Run limited",
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    const denied = await service.sendMessage(agent.id, "second");
+    expect(denied.run).toMatchObject({
+      status: "denied",
+      runtimeInvoked: false,
+      budgetReserved: false,
+    });
+    expect(denied.run.error).toContain("1 of 1 Runs used");
+    expect(runner.calls).toBe(1);
+    expect(service.getBudget(agent.id)).toMatchObject({ runsUsed: 1, tokensUsed: 17 });
+  });
+
+  it("uses persisted input plus output tokens for future admission", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Token limited",
+      budgetPolicy: { maxRuns: null, maxTotalTokens: 17 },
+    });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    const denied = await service.sendMessage(agent.id, "second");
+    expect(denied.run.error).toContain("17 of 17 tokens used");
+    expect(runner.calls).toBe(1);
+    expect(service.getBudget(agent.id).tokensUsed).toBe(17);
+  });
+
+  it("counts a Runtime-invoking failure against maxRuns", async () => {
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error("Runtime failed after invocation");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Failure limited",
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("failed");
+    const denied = await service.sendMessage(agent.id, "second");
+    expect(denied.run.status).toBe("denied");
+    expect(service.getBudget(agent.id).runsUsed).toBe(1);
+  });
+
+  it("atomically reserves the final Run slot under concurrent requests", async () => {
+    let finish!: (value: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    const runner: AgentRunner = {
+      run: async () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Concurrent budget",
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    const attempts = await Promise.allSettled([
+      service.sendMessage(agent.id, "first"),
+      service.sendMessage(agent.id, "second"),
+    ]);
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(service.getBudget(agent.id).runsUsed).toBe(1);
+    finish({ output: "done", threadId: "thread", usage: { outputTokens: 1 } });
+  });
+
+  it("isolates usage by Agent and applies edited budgets to later Runs", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const first = await service.createAgent({
+      name: "First",
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    const second = await service.createAgent({ name: "Second" });
+    const firstRun = await service.sendMessage(first.id, "first");
+    await expect.poll(() => service.getRun(firstRun.run.id).status).toBe("completed");
+    const secondRun = await service.sendMessage(second.id, "second");
+    await expect.poll(() => service.getRun(secondRun.run.id).status).toBe("completed");
+    expect((await service.sendMessage(first.id, "blocked")).run.status).toBe("denied");
+    await service.updateAgent(second.id, {
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    expect((await service.sendMessage(second.id, "blocked after edit")).run.status).toBe("denied");
   });
 
   it("does not let start reset a busy Agent and admit a second run", async () => {
