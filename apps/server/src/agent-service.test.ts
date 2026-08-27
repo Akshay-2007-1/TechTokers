@@ -146,6 +146,15 @@ describe("Agent lifecycle", () => {
     expect(denied.run.error).toContain("1 of 1 Runs used");
     expect(runner.calls).toBe(1);
     expect(service.getBudget(agent.id)).toMatchObject({ runsUsed: 1, tokensUsed: 17 });
+    const events = service.getBudgetEvents(agent.id);
+    expect(events[0]).toMatchObject({
+      agentId: agent.id,
+      runId: denied.run.id,
+      event: "budget.run_denied",
+      reason: "run_limit_exhausted",
+      runtimeInvoked: false,
+    });
+    expect(JSON.stringify(events)).not.toContain("second");
   });
 
   it("uses persisted input plus output tokens for future admission", async () => {
