@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
+import type { PipelineDiagnostics } from "./pipeline-debug.js";
 import type { AgentService } from "./agent-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -26,6 +27,7 @@ const messageBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  diagnostics?: PipelineDiagnostics,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -119,6 +121,10 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
+    diagnostics?.emit("playground.request.received", { agentId: id }, {
+      requestId: request.id,
+      promptLength: body.content.length,
+    });
     const result = await service.sendMessage(id, body.content);
     return reply.code(202).send(result);
   });

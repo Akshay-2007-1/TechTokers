@@ -15,6 +15,10 @@ const envSchema = z.object({
     .default("workspace-write"),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
+  DEBUG_AGENT_PIPELINE: z
+    .string()
+    .optional()
+    .transform((value) => value?.trim().toLowerCase() === "true"),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
@@ -75,6 +79,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,
+    debugAgentPipeline: env.DEBUG_AGENT_PIPELINE,
     runtimeProvider: env.RUNTIME_PROVIDER,
     containerEngine: env.CONTAINER_ENGINE,
     containerRuntimeImage: env.CONTAINER_RUNTIME_IMAGE,

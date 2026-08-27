@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import type { PipelineDiagnostics } from "./pipeline-debug.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -41,7 +42,11 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  onEvent?: (event: Record<string, unknown>) => void,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -84,6 +89,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
           : "Codex reported an unknown error";
     parsed.errors.push(message);
   }
+  onEvent?.(event);
 }
 
 export class CodexRunner implements AgentRunner {
@@ -99,7 +105,10 @@ export class CodexRunner implements AgentRunner {
     }
   >();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly diagnostics?: PipelineDiagnostics,
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -134,6 +143,16 @@ export class CodexRunner implements AgentRunner {
       cwd: request.workspacePath,
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
+    });
+    this.diagnostics?.emit("codex.process.started", {
+      agentId: request.agentId,
+      runId: request.runId,
+      sessionId: request.threadId,
+      runtimeType: "local-process",
+      workspacePath: request.workspacePath,
+      processId: child.pid,
+    }, {
+      codexSandboxMode: this.config.codexSandboxMode,
     });
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
@@ -171,7 +190,19 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+          parseCodexEventLine(line, parsed, (event) =>
+            this.diagnostics?.observeCodexEvent(
+              {
+                agentId: request.agentId,
+                runId: request.runId,
+                sessionId: parsed.threadId,
+                runtimeType: "local-process",
+                workspacePath: request.workspacePath,
+                processId: child.pid,
+              },
+              event,
+            ),
+          );
         }
       } else {
         stderr += chunk.toString("utf8");
@@ -196,7 +227,19 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
+        parseCodexEventLine(stdout.trim(), parsed, (event) =>
+          this.diagnostics?.observeCodexEvent(
+            {
+              agentId: request.agentId,
+              runId: request.runId,
+              sessionId: parsed.threadId,
+              runtimeType: "local-process",
+              workspacePath: request.workspacePath,
+              processId: child.pid,
+            },
+            event,
+          ),
+        );
       }
       if (active.cancelled) {
         throw new RunCancelledError();

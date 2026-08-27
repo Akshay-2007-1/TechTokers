@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import type { PipelineDiagnostics } from "./pipeline-debug.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -91,7 +92,10 @@ export function buildContainerRunArgs(
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly diagnostics?: PipelineDiagnostics,
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -142,6 +146,19 @@ export class ContainerCodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Runtime container");
     }
 
+    const startedAt = Date.now();
+    const name = containerName(request.agentId, this.config.runtimeInstanceId);
+    this.diagnostics?.emit("container.launch.started", {
+      agentId: request.agentId,
+      runId: request.runId,
+      sessionId: request.threadId,
+      runtimeType: "container",
+      workspacePath: request.workspacePath,
+      containerId: name,
+    }, {
+      codexSandboxMode: this.config.codexSandboxMode,
+      containerEngine: this.config.containerEngine,
+    });
     const child = spawn(
       this.config.containerEngine,
       buildContainerRunArgs(request, this.config),
@@ -151,6 +168,18 @@ export class ContainerCodexRunner implements AgentRunner {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    this.diagnostics?.emit("codex.process.started", {
+      agentId: request.agentId,
+      runId: request.runId,
+      sessionId: request.threadId,
+      runtimeType: "container",
+      workspacePath: request.workspacePath,
+      containerId: name,
+      processId: child.pid,
+    }, {
+      processBoundary: "docker-cli-to-container",
+      codexSandboxMode: this.config.codexSandboxMode,
+    });
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
       child.once("error", () => resolve());
@@ -187,7 +216,22 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed);
+        for (const line of lines) {
+          parseCodexEventLine(line, parsed, (event) =>
+            this.diagnostics?.observeCodexEvent(
+              {
+                agentId: request.agentId,
+                runId: request.runId,
+                sessionId: parsed.threadId,
+                runtimeType: "container",
+                workspacePath: request.workspacePath,
+                containerId: name,
+                processId: child.pid,
+              },
+              event,
+            ),
+          );
+        }
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
@@ -208,7 +252,22 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
+      if (stdout.trim()) {
+        parseCodexEventLine(stdout.trim(), parsed, (event) =>
+          this.diagnostics?.observeCodexEvent(
+            {
+              agentId: request.agentId,
+              runId: request.runId,
+              sessionId: parsed.threadId,
+              runtimeType: "container",
+              workspacePath: request.workspacePath,
+              containerId: name,
+              processId: child.pid,
+            },
+            event,
+          ),
+        );
+      }
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
@@ -216,6 +275,19 @@ export class ContainerCodexRunner implements AgentRunner {
       if (active.outputExceeded) {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
+      this.diagnostics?.emit("container.launch.completed", {
+        agentId: request.agentId,
+        runId: request.runId,
+        sessionId: parsed.threadId,
+        runtimeType: "container",
+        workspacePath: request.workspacePath,
+        containerId: name,
+        processId: child.pid,
+      }, {
+        executionStatus: exitCode === 0 ? "completed" : "failed",
+        exitCode,
+        durationMs: Date.now() - startedAt,
+      });
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
         throw new Error(

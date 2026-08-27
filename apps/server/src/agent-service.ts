@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import {
+  classifyDiagnosticError,
+  type PipelineDiagnostics,
+  redactDiagnosticText,
+} from "./pipeline-debug.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -24,6 +29,7 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly diagnostics?: PipelineDiagnostics,
   ) {}
 
   async initialize(): Promise<void> {
@@ -201,6 +207,15 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
+    this.diagnostics?.emit("run.created", {
+      agentId,
+      runId,
+      sessionId: agentAtStart.codexThreadId,
+      runtimeType: this.config.runtimeProvider,
+      workspacePath: agentAtStart.workspacePath,
+    }, {
+      promptLength: prompt.length,
+    });
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -233,6 +248,21 @@ export class AgentService {
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+    const startedAt = Date.now();
+    const context = {
+      agentId: agentAtStart.id,
+      runId: run.id,
+      sessionId: agentAtStart.codexThreadId,
+      runtimeType: this.config.runtimeProvider,
+      workspacePath: agentAtStart.workspacePath,
+    } as const;
+    this.diagnostics?.emit("runtime.selected", context, {
+      runtimeProvider: this.config.runtimeProvider,
+      codexSandboxMode: this.config.codexSandboxMode,
+    });
+    this.diagnostics?.emit("workspace.resolved", context, {
+      workspaceAccess: "mounted-selected-agent-workspace",
+    });
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -245,6 +275,7 @@ export class AgentService {
         throw new RunCancelledError();
       }
       const result = await this.runner.run({
+        runId: run.id,
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
@@ -272,6 +303,13 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      this.diagnostics?.emit("run.completed", {
+        ...context,
+        sessionId: result.threadId,
+      }, {
+        durationMs: Date.now() - startedAt,
+        outputBytes: Buffer.byteLength(result.output, "utf8"),
+      });
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
@@ -291,6 +329,11 @@ export class AgentService {
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
         }
+      });
+      this.diagnostics?.emit("run.failed", context, {
+        durationMs: Date.now() - startedAt,
+        errorCategory: classifyDiagnosticError(message) ?? "runtime_error",
+        errorSummary: redactDiagnosticText(message),
       });
     }
   }

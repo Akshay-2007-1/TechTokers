@@ -69,6 +69,7 @@ export interface RunnerResult {
 }
 
 export interface RunnerRequest {
+  runId?: string;
   agentId: string;
   workspacePath: string;
   prompt: string;
