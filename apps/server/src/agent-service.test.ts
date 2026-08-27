@@ -33,7 +33,10 @@ afterEach(async () => {
   const { rm } = await import("node:fs/promises");
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
+      // A completed Run can still be flushing its final JsonStore write when the
+      // test returns; retry so that late write does not fail the parent rmdir
+      // with ENOTEMPTY.
+      rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
     ),
   );
 });
@@ -214,6 +217,10 @@ describe("Agent lifecycle", () => {
     expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
     expect(service.getBudget(agent.id).runsUsed).toBe(1);
     finish({ output: "done", threadId: "thread", usage: { outputTokens: 1 } });
+    const accepted = attempts.find((attempt) => attempt.status === "fulfilled");
+    if (accepted?.status === "fulfilled") {
+      await expect.poll(() => service.getRun(accepted.value.run.id).status).toBe("completed");
+    }
   });
 
   it("isolates usage by Agent and applies edited budgets to later Runs", async () => {
