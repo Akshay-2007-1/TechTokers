@@ -25,8 +25,19 @@ const emptyForm = {
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
-  const limit = (value: string) => (value.trim() === "" ? null : Number(value));
-  return { maxRuns: limit(form.maxRuns), maxTotalTokens: limit(form.maxTotalTokens) };
+  const limit = (label: string, raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(label + " must be a whole number 0 or greater, or blank for unlimited.");
+    }
+    return value;
+  };
+  return {
+    maxRuns: limit("Maximum Runs", form.maxRuns),
+    maxTotalTokens: limit("Total-token budget", form.maxTotalTokens),
+  };
 }
 
 function formatTime(value: string): string {
@@ -64,6 +75,7 @@ function BudgetFields({
           type="number"
           min="0"
           max="1000000"
+          step="1"
           value={form.maxRuns}
           onChange={(event) => setForm({ ...form, maxRuns: event.target.value })}
         />
@@ -74,6 +86,7 @@ function BudgetFields({
           type="number"
           min="0"
           max="1000000000"
+          step="1"
           value={form.maxTotalTokens}
           onChange={(event) => setForm({ ...form, maxTotalTokens: event.target.value })}
         />
@@ -226,7 +239,7 @@ export default function App() {
         instructions: form.instructions,
         budgetPolicy: budgetPolicyFromForm(form),
       });
-      await refreshAgents();
+      await Promise.all([refreshAgents(), refreshBudget(selected.id)]);
       setShowSettings(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -300,6 +313,12 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+      }
+      if (result.run.status === "denied") {
+        // The server rejected the Run before invoking the Runtime; the Agent
+        // never went busy, so don't flip it locally or start polling.
+        void refreshBudget(selected.id).catch(() => undefined);
+        return;
       }
       setAgents((current) =>
         current.map((agent) =>

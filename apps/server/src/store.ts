@@ -24,6 +24,7 @@ export class JsonStore {
       if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
+      const parsedRuns = Array.isArray(parsed.runs) ? parsed.runs : [];
       this.data = {
         ...emptyDatabase(),
         ...parsed,
@@ -31,7 +32,8 @@ export class JsonStore {
           ...agent,
           budgetPolicy: agent.budgetPolicy ?? { maxRuns: null, maxTotalTokens: null },
         })),
-        runs: parsed.runs.map((run) => ({
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+        runs: parsedRuns.map((run) => ({
           ...run,
           budgetReserved: run.budgetReserved ?? Boolean(run.startedAt),
           runtimeInvoked: run.runtimeInvoked ?? Boolean(run.startedAt),

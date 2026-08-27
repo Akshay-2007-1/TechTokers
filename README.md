@@ -33,7 +33,7 @@ Volcengine ECS.
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.9+
 - npm 10+
 - Docker, Colima, or Podman
 - A Volcengine Ark API key and endpoint that supports the Responses API
