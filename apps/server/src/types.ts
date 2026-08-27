@@ -1,5 +1,5 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "denied";
 export type MessageRole = "user" | "assistant";
 
 export interface Agent {
@@ -7,6 +7,7 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  budgetPolicy: AgentBudgetPolicy;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -38,9 +39,41 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  budgetReserved: boolean;
+  runtimeInvoked: boolean;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+}
+
+export interface AgentBudgetPolicy {
+  maxRuns: number | null;
+  maxTotalTokens: number | null;
+}
+
+export type BudgetEventName = "budget.run_admitted" | "budget.run_denied";
+export type BudgetDenialReason = "run_limit_exhausted" | "token_limit_exhausted";
+
+export interface BudgetEvent {
+  id: string;
+  agentId: string;
+  runId: string;
+  event: BudgetEventName;
+  reason: BudgetDenialReason | null;
+  runsUsed: number;
+  maxRuns: number | null;
+  tokensUsed: number;
+  maxTotalTokens: number | null;
+  runtimeInvoked: false;
+  createdAt: string;
+}
+
+export interface AgentBudgetStatus {
+  policy: AgentBudgetPolicy;
+  runsUsed: number;
+  tokensUsed: number;
+  runsRemaining: number | null;
+  tokensRemaining: number | null;
 }
 
 export interface Database {
@@ -48,18 +81,21 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  budgetEvents: BudgetEvent[];
 }
 
 export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  budgetPolicy?: AgentBudgetPolicy | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  budgetPolicy?: AgentBudgetPolicy | undefined;
 }
 
 export interface RunnerResult {

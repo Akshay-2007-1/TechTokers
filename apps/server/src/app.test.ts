@@ -45,4 +45,22 @@ describe("HTTP boundary", () => {
     expect(oversized.statusCode).toBe(413);
     await app.close();
   });
+
+  it("rejects invalid budget limits at the HTTP boundary", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    for (const budgetPolicy of [
+      { maxRuns: -1, maxTotalTokens: null },
+      { maxRuns: 1.5, maxTotalTokens: null },
+      { maxRuns: 1_000_001, maxTotalTokens: null },
+      { maxRuns: null, maxTotalTokens: 1_000_000_001 },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        payload: { name: "Budget test", budgetPolicy },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    await app.close();
+  });
 });

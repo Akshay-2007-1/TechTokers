@@ -1,11 +1,25 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "denied";
+
+export interface AgentBudgetPolicy {
+  maxRuns: number | null;
+  maxTotalTokens: number | null;
+}
+
+export interface AgentBudgetStatus {
+  policy: AgentBudgetPolicy;
+  runsUsed: number;
+  tokensUsed: number;
+  runsRemaining: number | null;
+  tokensRemaining: number | null;
+}
 
 export interface Agent {
   id: string;
   name: string;
   description: string;
   instructions: string;
+  budgetPolicy: AgentBudgetPolicy;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;

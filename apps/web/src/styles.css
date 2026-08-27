@@ -572,6 +572,24 @@ textarea:focus {
   margin-top: 13px;
 }
 
+.budget-fields {
+  margin-top: 13px;
+}
+
+.budget-summary {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #d9d3fb;
+  border-radius: 11px;
+  background: var(--purple-soft);
+  color: #4e438e;
+  font-size: 12px;
+}
+
 .panel-footer {
   margin-top: 13px;
   display: flex;
