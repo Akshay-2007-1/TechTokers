@@ -14,6 +14,18 @@ export interface AgentBudgetStatus {
   tokensRemaining: number | null;
 }
 
+export interface GovernanceEvent {
+  id: string;
+  agentId: string;
+  runId: string | null;
+  event: string;
+  decision: "admit" | "deny" | null;
+  reason: string;
+  runtimeInvoked: boolean;
+  actualTokensConsumed: number | null;
+  createdAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;

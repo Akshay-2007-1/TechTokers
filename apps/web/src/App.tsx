@@ -5,6 +5,7 @@ import type {
   AgentBudgetPolicy,
   AgentBudgetStatus,
   AgentRun,
+  GovernanceEvent,
   Message,
   SystemInfo,
 } from "./types";
@@ -49,6 +50,24 @@ function agentPayloadFromForm(form: typeof emptyForm) {
     budgetPolicy: budgetPolicyFromForm(form),
     maxPromptChars: form.maxPromptChars === "" ? null : Number(form.maxPromptChars),
   };
+}
+
+type UtilizationState = "unlimited" | "healthy" | "warning" | "exhausted";
+
+function utilizationState(used: number, limit: number | null): UtilizationState {
+  if (limit === null) return "unlimited";
+  if (used >= limit) return "exhausted";
+  return used / limit >= 0.8 ? "warning" : "healthy";
+}
+
+function highestUtilizationState(states: UtilizationState[]): UtilizationState {
+  const rank: Record<UtilizationState, number> = {
+    unlimited: 0,
+    healthy: 1,
+    warning: 2,
+    exhausted: 3,
+  };
+  return states.reduce((highest, current) => rank[current] > rank[highest] ? current : highest);
 }
 
 function formatTime(value: string): string {
@@ -117,6 +136,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [budget, setBudget] = useState<AgentBudgetStatus | null>(null);
+  const [governanceEvents, setGovernanceEvents] = useState<GovernanceEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -134,6 +154,13 @@ export default function App() {
   const promptCharacterCount = Array.from(prompt).length;
   const promptLimit = selected?.maxPromptChars ?? null;
   const promptIsTooLong = promptLimit !== null && promptCharacterCount > promptLimit;
+  const inputUtilization = utilizationState(promptCharacterCount, promptLimit);
+  const budgetUtilization = budget
+    ? highestUtilizationState([
+        utilizationState(budget.runsUsed, budget.policy.maxRuns),
+        utilizationState(budget.tokensUsed, budget.policy.maxTotalTokens),
+      ])
+    : "unlimited";
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -154,7 +181,10 @@ export default function App() {
 
   const refreshBudget = useCallback(async (agentId: string) => {
     const result = await api.budget(agentId);
-    if (mountedRef.current && selectedIdRef.current === agentId) setBudget(result.budget);
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setBudget(result.budget);
+      setGovernanceEvents(result.events);
+    }
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -182,6 +212,7 @@ export default function App() {
     if (!selectedId) {
       setMessages([]);
       setBudget(null);
+      setGovernanceEvents([]);
       return;
     }
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId), refreshBudget(selectedId)])
@@ -525,8 +556,13 @@ export default function App() {
               <section className="budget-summary" aria-label="Agent budget">
                 <strong>Budget</strong>
                 <span>
-                  {budget.runsUsed} / {budget.policy.maxRuns ?? "∞"} Runs · {budget.tokensUsed} / {budget.policy.maxTotalTokens ?? "∞"} tokens
+                  {budget.runsUsed} / {budget.policy.maxRuns ?? "∞"} Runs · {budget.tokensUsed} / {budget.policy.maxTotalTokens ?? "∞"} tokens · {budgetUtilization}
                 </span>
+                {governanceEvents[0] && (
+                  <span>
+                    Latest evidence: {governanceEvents[0].reason} · {formatTime(governanceEvents[0].createdAt)}
+                  </span>
+                )}
               </section>
             )}
 
@@ -685,7 +721,7 @@ export default function App() {
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"} · {promptLimit === null
                       ? "No prompt limit"
-                      : promptCharacterCount + " / " + promptLimit + " characters"}
+                      : promptCharacterCount + " / " + promptLimit + " characters · " + inputUtilization}
                     {promptIsTooLong ? " · Prompt exceeds this Agent's limit" : ""}
                   </span>
                   <button

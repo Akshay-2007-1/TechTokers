@@ -3,6 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
+import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
@@ -131,6 +132,13 @@ describe("Agent lifecycle", () => {
       tokensUsed: 34,
       policy: { maxRuns: null, maxTotalTokens: null },
     });
+    expect(service.getBudgetEvents(agent.id)).toContainEqual(
+      expect.objectContaining({
+        event: "resource_governance.usage_reconciled",
+        actualTokensConsumed: 17,
+        runtimeInvoked: true,
+      }),
+    );
   });
 
   it("denies a Run before Runtime invocation when maxRuns is exhausted", async () => {
@@ -155,7 +163,8 @@ describe("Agent lifecycle", () => {
     expect(events[0]).toMatchObject({
       agentId: agent.id,
       runId: denied.run.id,
-      event: "budget.run_denied",
+      event: "resource_governance.admission",
+      decision: "deny",
       reason: "run_limit_exhausted",
       runtimeInvoked: false,
     });
@@ -295,5 +304,84 @@ describe("Agent lifecycle", () => {
     expect(runner.requests).toHaveLength(0);
     expect(service.getRuns(agent.id)).toHaveLength(0);
     expect(service.getMessages(agent.id)).toHaveLength(0);
+    const events = service.getBudgetEvents(agent.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      agentId: agent.id,
+      decision: "deny",
+      reason: "input_too_large",
+      runtimeInvoked: false,
+      observedUsage: { inputCharacters: 6 },
+      appliedLimits: { maxInputCharacters: 5 },
+    });
+    expect(JSON.stringify(events)).not.toContain("123456");
+  });
+
+  it("uses the unified contract for every admission reason", async () => {
+    const service = await makeService();
+    const unlimited = await service.createAgent({ name: "Unlimited" });
+    const inputLimited = await service.createAgent({ name: "Input", maxPromptChars: 1 });
+    const runLimited = await service.createAgent({
+      name: "Runs",
+      budgetPolicy: { maxRuns: 0, maxTotalTokens: null },
+    });
+    const tokenLimited = await service.createAgent({
+      name: "Tokens",
+      budgetPolicy: { maxRuns: null, maxTotalTokens: 0 },
+    });
+
+    const admitted = await service.sendMessage(unlimited.id, "ok");
+    await expect.poll(() => service.getRun(admitted.run.id).status).toBe("completed");
+    await expect(service.sendMessage(inputLimited.id, "too large")).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    await service.sendMessage(runLimited.id, "blocked");
+    await service.sendMessage(tokenLimited.id, "blocked");
+
+    expect(service.getBudgetEvents(unlimited.id).some((event) => event.reason === "within_limits")).toBe(true);
+    expect(service.getBudgetEvents(inputLimited.id).some((event) => event.reason === "input_too_large")).toBe(true);
+    expect(service.getBudgetEvents(runLimited.id).some((event) => event.reason === "run_limit_exhausted")).toBe(true);
+    expect(service.getBudgetEvents(tokenLimited.id).some((event) => event.reason === "token_budget_exhausted")).toBe(true);
+  });
+
+  it("records a policy update without prompts or credentials", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Evidence" });
+    await service.updateAgent(agent.id, {
+      maxPromptChars: 25,
+      budgetPolicy: { maxRuns: 2, maxTotalTokens: 50 },
+    });
+    const event = service.getBudgetEvents(agent.id)[0];
+    expect(event).toMatchObject({
+      event: "resource_governance.policy_updated",
+      reason: "policy_updated",
+      actor: "local_operator",
+      previousLimits: { maxRuns: null, maxTotalTokens: null, maxInputCharacters: null },
+      appliedLimits: { maxRuns: 2, maxTotalTokens: 50, maxInputCharacters: 25 },
+    });
+    expect(JSON.stringify(event)).not.toContain("test-key");
+  });
+
+  it("counts a cancelled admitted Run against the Run limit", async () => {
+    let rejectRun!: (reason: Error) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise<RunnerResult>((_resolve, reject) => { rejectRun = reject; }),
+      cancel: async () => {
+        rejectRun(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Cancelled",
+      budgetPolicy: { maxRuns: 1, maxTotalTokens: null },
+    });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("running");
+    await service.stopAgent(agent.id);
+    expect(service.getRun(first.run.id).status).toBe("cancelled");
+    await service.startAgent(agent.id);
+    expect((await service.sendMessage(agent.id, "second")).run.status).toBe("denied");
   });
 });

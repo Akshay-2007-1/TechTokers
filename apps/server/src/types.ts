@@ -52,20 +52,51 @@ export interface AgentBudgetPolicy {
   maxTotalTokens: number | null;
 }
 
-export type BudgetEventName = "budget.run_admitted" | "budget.run_denied";
-export type BudgetDenialReason = "run_limit_exhausted" | "token_limit_exhausted";
+export type AdmissionReason =
+  | "within_limits"
+  | "input_too_large"
+  | "run_limit_exhausted"
+  | "token_budget_exhausted";
+export type AdmissionOutcome = "admit" | "deny";
 
-export interface BudgetEvent {
+export interface ResourceObservedUsage {
+  runsUsed: number;
+  tokensUsed: number;
+  inputCharacters: number;
+}
+
+export interface AppliedResourceLimits {
+  maxRuns: number | null;
+  maxTotalTokens: number | null;
+  maxInputCharacters: number | null;
+}
+
+export interface AdmissionDecision {
+  decision: AdmissionOutcome;
+  reason: AdmissionReason;
+  runtimeInvoked: false;
+  observedUsage: ResourceObservedUsage;
+  appliedLimits: AppliedResourceLimits;
+}
+
+export type GovernanceEventName =
+  | "resource_governance.admission"
+  | "resource_governance.policy_updated"
+  | "resource_governance.usage_reconciled";
+
+export interface GovernanceEvent {
   id: string;
   agentId: string;
-  runId: string;
-  event: BudgetEventName;
-  reason: BudgetDenialReason | null;
-  runsUsed: number;
-  maxRuns: number | null;
-  tokensUsed: number;
-  maxTotalTokens: number | null;
-  runtimeInvoked: false;
+  runId: string | null;
+  event: GovernanceEventName;
+  decision: AdmissionOutcome | null;
+  reason: AdmissionReason | "policy_updated" | "usage_reconciled";
+  observedUsage: ResourceObservedUsage;
+  appliedLimits: AppliedResourceLimits;
+  runtimeInvoked: boolean;
+  actualTokensConsumed: number | null;
+  previousLimits?: AppliedResourceLimits | undefined;
+  actor?: "local_operator" | undefined;
   createdAt: string;
 }
 
@@ -82,7 +113,7 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
-  budgetEvents: BudgetEvent[];
+  governanceEvents: GovernanceEvent[];
 }
 
 export interface CreateAgentInput {

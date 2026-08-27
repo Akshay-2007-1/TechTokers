@@ -210,12 +210,12 @@ cp deploy/volcengine/terraform.tfvars.example \
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
-## Agent Budget Guard
+## Agent Resource Governance
 
-Each Agent can optionally set a maximum number of Runs and/or a total-token
-budget. Leave either field blank for unlimited use. The server enforces these
-limits atomically before starting the Codex Runtime; the browser only displays
-the resulting status.
+Each Agent can optionally set a maximum number of Runs, total-token budget,
+and input-character limit. Leave a field blank for unlimited use. The server
+enforces all controls atomically before starting the Codex Runtime; browser
+checks only improve feedback.
 
 - Every admitted Run reserves one Run slot, including a Run that later fails or
   is cancelled. A denied Run reserves no slot and never invokes the Runtime.
@@ -225,8 +225,13 @@ the resulting status.
   the total above its token limit, after which later Runs are denied.
 
 Current budget state and redacted admission evidence are available at
-`GET /api/agents/:id/budget`. Budget events contain IDs, limits, counters,
-reason, and timestamp only—never prompts, model output, or credentials.
+`GET /api/agents/:id/budget`. Governance events contain IDs, limits, counters,
+reason, and timestamp only—never prompts, model output, or credentials. The
+usage labels are current measured state only: unlimited, healthy (<80%),
+warning (80–99%), or exhausted (100%+); they do not predict a future Run.
+
+See [Resource Governance architecture](docs/RESOURCE_GOVERNANCE.md) for the
+trusted enforcement boundary, evidence model, extension seams, and limitations.
 
 ## How it works
 
