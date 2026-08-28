@@ -127,6 +127,21 @@ export async function createApp(
     return { budget: service.getBudget(id), events: service.getBudgetEvents(id) };
   });
 
+  app.get("/api/agents/:agentId/runs/:runId/workspace-changes", async (request) => {
+    const { agentId, runId } = z.object({ agentId: z.string().uuid(), runId: z.string().uuid() }).parse(request.params);
+    return { changeSet: service.getWorkspaceChangeSet(agentId, runId) };
+  });
+
+  app.post("/api/agents/:agentId/runs/:runId/workspace-changes/approve", async (request) => {
+    const { agentId, runId } = z.object({ agentId: z.string().uuid(), runId: z.string().uuid() }).parse(request.params);
+    return { changeSet: await service.decideWorkspaceChangeSet(agentId, runId, true) };
+  });
+
+  app.post("/api/agents/:agentId/runs/:runId/workspace-changes/deny", async (request) => {
+    const { agentId, runId } = z.object({ agentId: z.string().uuid(), runId: z.string().uuid() }).parse(request.params);
+    return { changeSet: await service.decideWorkspaceChangeSet(agentId, runId, false) };
+  });
+
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);

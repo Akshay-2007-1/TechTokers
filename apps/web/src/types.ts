@@ -1,5 +1,5 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "denied";
+export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied";
 
 export interface AgentBudgetPolicy {
   maxRuns: number | null;
@@ -63,6 +63,12 @@ export interface AgentRun {
     outputTokens?: number;
   } | null;
   createdAt: string;
+}
+
+export interface WorkspaceChangeSet {
+  id: string; agentId: string; runId: string;
+  status: "pending" | "applying" | "approved" | "denied" | "expired" | "conflicted" | "apply_failed";
+  changes: Array<{ kind: "created" | "modified" | "deleted"; path: string }>;
 }
 
 export interface SystemInfo {

@@ -49,7 +49,7 @@ export interface AgentRun {
 
 export interface WorkspaceChangeSet {
   id: string; agentId: string; runId: string; stagingPath: string;
-  status: "pending" | "approved" | "denied" | "expired" | "conflicted" | "apply_failed";
+  status: "pending" | "applying" | "approved" | "denied" | "expired" | "conflicted" | "apply_failed";
   changes: import("./transactional-workspace.js").WorkspaceChange[];
   createdAt: string; decidedAt: string | null;
 }

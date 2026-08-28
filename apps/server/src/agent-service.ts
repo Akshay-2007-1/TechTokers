@@ -22,6 +22,8 @@ import type {
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createStagingWorkspace, detectWorkspaceChanges, discardStagingWorkspace } from "./transactional-workspace.js";
+import { WorkspaceTransactionApplier } from "./workspace-transaction-applier.js";
+import path from "node:path";
 
 const now = () => new Date().toISOString();
 
@@ -68,6 +70,39 @@ export class AgentService {
       throw new HttpError(404, "Agent not found");
     }
     return agent;
+  }
+
+  getWorkspaceChangeSet(agentId: string, runId: string) {
+    const changeSet = this.store.snapshot().workspaceChangeSets.find((item) => item.agentId === agentId && item.runId === runId);
+    if (!changeSet) throw new HttpError(404, "Workspace change set not found");
+    return changeSet;
+  }
+
+  async decideWorkspaceChangeSet(agentId: string, runId: string, approve: boolean) {
+    const claimed = await this.store.mutate((database) => {
+      const changeSet = database.workspaceChangeSets.find((item) => item.agentId === agentId && item.runId === runId);
+      const run = database.runs.find((item) => item.id === runId && item.agentId === agentId);
+      if (!changeSet || !run) throw new HttpError(404, "Workspace change set not found");
+      if (changeSet.status !== "pending") throw new HttpError(409, "Workspace change set is no longer pending");
+      if (!approve) { changeSet.status = "denied"; changeSet.decidedAt = now(); run.status = "completed"; return { changeSet: structuredClone(changeSet), run: structuredClone(run), apply: false }; }
+      changeSet.status = "applying";
+      return { changeSet: structuredClone(changeSet), run: structuredClone(run), apply: true };
+    });
+    if (!claimed.apply) { await discardStagingWorkspace(claimed.changeSet.stagingPath); return claimed.changeSet; }
+    try {
+      await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).apply(this.getAgent(agentId).workspacePath, claimed.changeSet.stagingPath, claimed.changeSet.changes);
+      return await this.store.mutate((database) => {
+        const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
+        const run = database.runs.find((item) => item.id === runId)!;
+        changeSet.status = "approved"; changeSet.decidedAt = now(); run.status = "completed"; return structuredClone(changeSet);
+      });
+    } catch (error) {
+      return await this.store.mutate((database) => {
+        const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
+        changeSet.status = error instanceof Error && error.message.includes("conflict") ? "conflicted" : "apply_failed";
+        changeSet.decidedAt = now(); return structuredClone(changeSet);
+      });
+    }
   }
 
   async createAgent(input: CreateAgentInput): Promise<Agent> {

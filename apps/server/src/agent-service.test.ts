@@ -108,6 +108,37 @@ describe("Agent lifecycle", () => {
     await expect(readFile(path.join(agent.workspacePath, ".env"), "utf8")).resolves.toBe("protected");
   });
 
+  it("applies a pending staging change exactly once after approval", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "approved.txt"), "approved", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new StagingRunner());
+    const agent = await service.createAgent({ name: "Approve" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await service.decideWorkspaceChangeSet(agent.id, run.id, true);
+    await expect(readFile(path.join(agent.workspacePath, "approved.txt"), "utf8")).resolves.toBe("approved");
+    await expect(service.decideWorkspaceChangeSet(agent.id, run.id, true)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("denies a pending change without touching the persistent workspace", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "denied.txt"), "denied", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new StagingRunner());
+    const agent = await service.createAgent({ name: "Deny" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await service.decideWorkspaceChangeSet(agent.id, run.id, false);
+    await expect(readFile(path.join(agent.workspacePath, "denied.txt"), "utf8")).rejects.toThrow();
+  });
+
   it("atomically accepts only one concurrent run per Agent", async () => {
     let finish!: (result: RunnerResult) => void;
     const pending = new Promise<RunnerResult>((resolve) => {

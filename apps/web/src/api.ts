@@ -1,4 +1,4 @@
-import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRun, GovernanceEvent, Message, SystemInfo } from "./types";
+import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRun, GovernanceEvent, Message, SystemInfo, WorkspaceChangeSet } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -88,4 +88,6 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  workspaceChanges: (agentId: string, runId: string) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes`),
+  decideWorkspaceChanges: (agentId: string, runId: string, approve: boolean) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes/${approve ? "approve" : "deny"}`, { method: "POST" }),
 };

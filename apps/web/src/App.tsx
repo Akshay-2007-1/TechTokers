@@ -8,6 +8,7 @@ import type {
   GovernanceEvent,
   Message,
   SystemInfo,
+  WorkspaceChangeSet,
 } from "./types";
 
 const starterPrompts = [
@@ -135,6 +136,7 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [changeSet, setChangeSet] = useState<WorkspaceChangeSet | null>(null);
   const [budget, setBudget] = useState<AgentBudgetStatus | null>(null);
   const [governanceEvents, setGovernanceEvents] = useState<GovernanceEvent[]>([]);
   const [busy, setBusy] = useState(false);
@@ -251,6 +253,17 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (!selected || activeRun?.status !== "awaiting_approval") { setChangeSet(null); return; }
+    void api.workspaceChanges(selected.id, activeRun.id).then((result) => setChangeSet(result.changeSet)).catch(() => setChangeSet(null));
+  }, [activeRun, selected]);
+
+  const decideChanges = async (approve: boolean) => {
+    if (!selected || !activeRun) return;
+    const result = await api.decideWorkspaceChanges(selected.id, activeRun.id, approve);
+    setChangeSet(result.changeSet); setActiveRun({ ...activeRun, status: "completed" });
+  };
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -690,6 +703,13 @@ export default function App() {
                   <article className="run-error">
                     <strong>{activeRun.status === "denied" ? "Run denied" : "Run failed"}</strong>
                     <span>{activeRun.error}</span>
+                  </article>
+                )}
+                {changeSet && (
+                  <article className="run-error">
+                    <strong>Agent execution finished. Workspace changes are pending approval and have not been applied.</strong>
+                    <span>{changeSet.changes.map((change) => `${change.kind}: ${change.path}`).join(" · ")}</span>
+                    <div className="form-actions"><button type="button" onClick={() => void decideChanges(true)}>Approve</button><button type="button" onClick={() => void decideChanges(false)}>Deny</button></div>
                   </article>
                 )}
                 <div ref={messageEnd} />
