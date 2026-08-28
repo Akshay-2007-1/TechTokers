@@ -104,6 +104,7 @@ describe("JsonStore", () => {
       messages: [],
       runs: [],
       governanceEvents: [],
+      workspaceChangeSets: [],
     });
   });
 });

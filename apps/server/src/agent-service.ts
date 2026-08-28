@@ -21,6 +21,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { createStagingWorkspace, detectWorkspaceChanges, discardStagingWorkspace } from "./transactional-workspace.js";
 
 const now = () => new Date().toISOString();
 
@@ -284,6 +285,8 @@ export class AgentService {
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+    const stagingPath = this.workspaces.stagingPath(run.id);
+    await createStagingWorkspace(agentAtStart.workspacePath, stagingPath);
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -298,19 +301,21 @@ export class AgentService {
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
+        workspacePath: stagingPath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });
+      const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
-        storedRun.status = "completed";
+        storedRun.status = changes.length ? "awaiting_approval" : "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
+        if (changes.length) database.workspaceChangeSets.push({ id: randomUUID(), agentId: agent.id, runId: run.id, stagingPath, status: "pending", changes, createdAt: completedAt, decidedAt: null });
         if (result.usage) recordUsageReconciliation(database, agent, storedRun, completedAt);
         database.messages.push({
           id: randomUUID(),
@@ -325,6 +330,7 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      if (!changes.length) await discardStagingWorkspace(stagingPath);
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;

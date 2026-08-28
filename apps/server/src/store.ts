@@ -9,6 +9,7 @@ const emptyDatabase = (): Database => ({
   messages: [],
   runs: [],
   governanceEvents: [],
+  workspaceChangeSets: [],
 });
 
 export class JsonStore {
@@ -43,6 +44,7 @@ export class JsonStore {
         governanceEvents: Array.isArray(parsed.governanceEvents)
           ? parsed.governanceEvents
           : legacyGovernanceEvents(parsed),
+        workspaceChangeSets: Array.isArray(parsed.workspaceChangeSets) ? parsed.workspaceChangeSets : [],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {

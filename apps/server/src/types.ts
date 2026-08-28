@@ -1,5 +1,5 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "denied";
+export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied";
 export type MessageRole = "user" | "assistant";
 
 export interface Agent {
@@ -45,6 +45,13 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+}
+
+export interface WorkspaceChangeSet {
+  id: string; agentId: string; runId: string; stagingPath: string;
+  status: "pending" | "approved" | "denied" | "expired" | "conflicted" | "apply_failed";
+  changes: import("./transactional-workspace.js").WorkspaceChange[];
+  createdAt: string; decidedAt: string | null;
 }
 
 export interface AgentBudgetPolicy {
@@ -114,6 +121,7 @@ export interface Database {
   messages: Message[];
   runs: AgentRun[];
   governanceEvents: GovernanceEvent[];
+  workspaceChangeSets: WorkspaceChangeSet[];
 }
 
 export interface CreateAgentInput {
