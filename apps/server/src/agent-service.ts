@@ -91,11 +91,13 @@ export class AgentService {
     if (!claimed.apply) { await discardStagingWorkspace(claimed.changeSet.stagingPath); return claimed.changeSet; }
     try {
       await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).apply(this.getAgent(agentId).workspacePath, claimed.changeSet.stagingPath, claimed.changeSet.changes);
-      return await this.store.mutate((database) => {
+      const approved = await this.store.mutate((database) => {
         const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
         const run = database.runs.find((item) => item.id === runId)!;
         changeSet.status = "approved"; changeSet.decidedAt = now(); run.status = "completed"; return structuredClone(changeSet);
       });
+      await discardStagingWorkspace(claimed.changeSet.stagingPath);
+      return approved;
     } catch (error) {
       return await this.store.mutate((database) => {
         const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
@@ -334,10 +336,16 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      const latestDecision = this.store.snapshot().workspaceChangeSets
+        .filter((item) => item.agentId === agentAtStart.id && item.decidedAt !== null)
+        .sort((left, right) => (right.decidedAt ?? "").localeCompare(left.decidedAt ?? ""))[0];
+      const runtimePrompt = latestDecision?.status === "denied"
+        ? run.prompt + "\n\n[Platform notice: the previous proposed workspace changes were denied and were not applied. Do not assume files from that proposal exist; inspect the current workspace before relying on them.]"
+        : run.prompt;
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: stagingPath,
-        prompt: run.prompt,
+        prompt: runtimePrompt,
         threadId: agentAtStart.codexThreadId,
       });
       const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);

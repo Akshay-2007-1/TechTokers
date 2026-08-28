@@ -706,10 +706,14 @@ export default function App() {
                   </article>
                 )}
                 {changeSet && (
-                  <article className="run-error">
-                    <strong>Agent execution finished. Workspace changes are pending approval and have not been applied.</strong>
-                    <span>{changeSet.changes.map((change) => `${change.kind}: ${change.path}`).join(" · ")}</span>
-                    <div className="form-actions"><button type="button" onClick={() => void decideChanges(true)}>Approve</button><button type="button" onClick={() => void decideChanges(false)}>Deny</button></div>
+                  <article className="workspace-approval">
+                    <span className="eyebrow">Workspace approval</span>
+                    <strong>Changes are staged, not yet persistent.</strong>
+                    <span className="workspace-change-list">{changeSet.changes.map((change) => `${change.kind}: ${change.path}`).join(" · ")}</span>
+                    <div className="workspace-approval-actions">
+                      <button className="button button-primary" type="button" onClick={() => void decideChanges(true)}>Approve changes</button>
+                      <button className="button button-danger" type="button" onClick={() => void decideChanges(false)}>Deny changes</button>
+                    </div>
                   </article>
                 )}
                 <div ref={messageEnd} />

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -115,12 +115,14 @@ describe("Agent lifecycle", () => {
         return super.run(request);
       }
     }
-    const service = await makeService(new StagingRunner());
+    const runner = new StagingRunner(); const service = await makeService(runner);
     const agent = await service.createAgent({ name: "Approve" });
     const { run } = await service.sendMessage(agent.id, "propose");
     await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    const staged = service.getWorkspaceChangeSet(agent.id, run.id).stagingPath;
     await service.decideWorkspaceChangeSet(agent.id, run.id, true);
     await expect(readFile(path.join(agent.workspacePath, "approved.txt"), "utf8")).resolves.toBe("approved");
+    await expect(lstat(staged)).rejects.toThrow();
     await expect(service.decideWorkspaceChangeSet(agent.id, run.id, true)).rejects.toMatchObject({ statusCode: 409 });
   });
 
@@ -131,12 +133,15 @@ describe("Agent lifecycle", () => {
         return super.run(request);
       }
     }
-    const service = await makeService(new StagingRunner());
+    const runner = new StagingRunner(); const service = await makeService(runner);
     const agent = await service.createAgent({ name: "Deny" });
     const { run } = await service.sendMessage(agent.id, "propose");
     await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
     await service.decideWorkspaceChangeSet(agent.id, run.id, false);
     await expect(readFile(path.join(agent.workspacePath, "denied.txt"), "utf8")).rejects.toThrow();
+    const next = await service.sendMessage(agent.id, "try again");
+    await expect.poll(() => service.getRun(next.run.id).status).toBe("awaiting_approval");
+    expect(runner.requests.at(-1)?.prompt).toContain("previous proposed workspace changes were denied");
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

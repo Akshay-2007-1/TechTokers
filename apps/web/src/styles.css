@@ -842,6 +842,25 @@ textarea:focus {
   font-size: 11px;
 }
 
+.workspace-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px solid #ded6ad;
+  border-left: 3px solid #b98919;
+  border-radius: 10px;
+  background: #fffbed;
+  color: #574a25;
+  font-size: 12px;
+}
+
+.workspace-approval .eyebrow { color: #997719; }
+.workspace-change-list { color: #6f6240; word-break: break-word; }
+.workspace-approval-actions { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 3px; }
+.workspace-approval-actions .button { min-width: 132px; }
+
 .composer {
   margin: 0;
   border-top: 1px solid #e1dfd8;
