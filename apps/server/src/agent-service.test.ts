@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -87,6 +87,25 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+  });
+
+  it("runs against staging and leaves the persistent workspace unchanged pending approval", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "proposal.txt"), "staged", "utf8");
+        await expect(readFile(path.join(request.workspacePath, ".env"), "utf8")).rejects.toThrow();
+        return super.run(request);
+      }
+    }
+    const runner = new StagingRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Staged" });
+    await writeFile(path.join(agent.workspacePath, ".env"), "protected", "utf8");
+    const { run } = await service.sendMessage(agent.id, "propose a file");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    expect(runner.requests[0]?.workspacePath).not.toBe(agent.workspacePath);
+    await expect(readFile(path.join(agent.workspacePath, "proposal.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(agent.workspacePath, ".env"), "utf8")).resolves.toBe("protected");
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
