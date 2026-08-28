@@ -63,4 +63,17 @@ describe("HTTP boundary", () => {
     }
     await app.close();
   });
+
+  it("rejects invalid per-Agent prompt limits", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    for (const maxPromptChars of [0, -1, 1.5, 50_001]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        payload: { name: "Prompt-limited Agent", maxPromptChars },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    await app.close();
+  });
 });

@@ -77,8 +77,9 @@ describe("JsonStore", () => {
     const data = store.snapshot();
 
     expect(data.messages).toEqual([]);
-    expect(data.budgetEvents).toEqual([]);
+    expect(data.governanceEvents).toEqual([]);
     expect(data.agents[0]?.budgetPolicy).toEqual({ maxRuns: null, maxTotalTokens: null });
+    expect(data.agents[0]?.maxPromptChars).toBeNull();
     expect(data.runs.find((run) => run.id === "r-started")).toMatchObject({
       budgetReserved: true,
       runtimeInvoked: true,
@@ -102,7 +103,7 @@ describe("JsonStore", () => {
       agents: [],
       messages: [],
       runs: [],
-      budgetEvents: [],
+      governanceEvents: [],
     });
   });
 });

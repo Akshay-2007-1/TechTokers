@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   admitRun,
-  budgetDenialMessage,
   budgetStatus,
+  admissionDenialMessage,
+  recordPolicyUpdate,
+  recordUsageReconciliation,
+  resourceLimits,
   unlimitedBudgetPolicy,
 } from "./budget-service.js";
 import type { AppConfig } from "./config.js";
@@ -75,6 +78,7 @@ export class AgentService {
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
+      maxPromptChars: input.maxPromptChars ?? null,
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -100,10 +104,14 @@ export class AgentService {
       if (agent.status === "busy") {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
+      const previousLimits = resourceLimits(agent);
+      const policyChanged = input.budgetPolicy !== undefined || input.maxPromptChars !== undefined;
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
+      if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
+      if (policyChanged) recordPolicyUpdate(database, agent, previousLimits, now());
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -120,7 +128,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
-      database.budgetEvents = database.budgetEvents.filter((item) => item.agentId !== id);
+      database.governanceEvents = database.governanceEvents.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -168,7 +176,7 @@ export class AgentService {
     this.getAgent(agentId);
     return this.store
       .snapshot()
-      .budgetEvents.filter((event) => event.agentId === agentId)
+      .governanceEvents.filter((event) => event.agentId === agentId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
@@ -217,22 +225,32 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
-      const decision = admitRun(database, storedAgent, run, timestamp);
+      const decision = admitRun(
+        database,
+        storedAgent,
+        run,
+        Array.from(prompt).length,
+        timestamp,
+      );
+      if (decision.decision === "deny" && decision.reason === "input_too_large") {
+        return { agent: null, inputDenied: true, decision };
+      }
       database.runs.push(run);
       database.messages.push(message);
-      if (!decision.admitted) {
+      if (decision.decision === "deny") {
         run.status = "denied";
-        run.error = budgetDenialMessage(decision.reason, decision.status);
+        run.error = admissionDenialMessage(decision);
         run.completedAt = timestamp;
-        return { agent: null, denied: true };
+        return { agent: null, inputDenied: false, decision };
       }
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return { agent: snapshot, denied: false };
+      return { agent: snapshot, inputDenied: false, decision };
     });
-    if (admission.denied || !admission.agent) return { run, message };
+    if (admission.inputDenied) throw new HttpError(422, admissionDenialMessage(admission.decision));
+    if (!admission.agent) return { run, message };
     const agentAtStart = admission.agent;
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
@@ -293,6 +311,7 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
+        if (result.usage) recordUsageReconciliation(database, agent, storedRun, completedAt);
         database.messages.push({
           id: randomUUID(),
           agentId: agent.id,
