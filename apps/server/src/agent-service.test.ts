@@ -3,7 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
-import { RunCancelledError } from "./errors.js";
+import { RunCancelledError, RuntimeLimitError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
@@ -383,5 +383,63 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(first.run.id).status).toBe("cancelled");
     await service.startAgent(agent.id);
     expect((await service.sendMessage(agent.id, "second")).run.status).toBe("denied");
+  });
+
+  it("passes the Agent's runtime limits to the Runner", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Bounded runtime",
+      runtimeLimits: { maxRunDurationMs: 15_000, maxRunOutputBytes: 65_536 },
+    });
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(runner.requests.at(-1)?.limits).toEqual({
+      durationMs: 15_000,
+      outputBytes: 65_536,
+    });
+  });
+
+  it("marks a runtime-terminated Run and lets a later Run proceed", async () => {
+    let killRun = true;
+    const runner: AgentRunner = {
+      run: async () => {
+        if (killRun) {
+          killRun = false;
+          throw new RuntimeLimitError("duration_exceeded", 10_000, 10_050);
+        }
+        return { output: "recovered", threadId: "thread", usage: { outputTokens: 3 } };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Runaway",
+      runtimeLimits: { maxRunDurationMs: 10_000, maxRunOutputBytes: null },
+    });
+
+    const first = await service.sendMessage(agent.id, "loop forever");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("terminated");
+    const terminated = service.getRun(first.run.id);
+    expect(terminated.terminationReason).toBe("duration_exceeded");
+    expect(terminated.error).toContain("10000 ms");
+    // Containment, not an Agent fault: the Agent is usable again immediately.
+    expect(service.getAgent(agent.id).status).toBe("ready");
+    expect(service.getAgent(agent.id).lastError).toBeNull();
+
+    const events = service.getBudgetEvents(agent.id);
+    const terminationEvent = events.find(
+      (event) => event.event === "resource_governance.run_terminated",
+    );
+    expect(terminationEvent).toMatchObject({
+      reason: "run_terminated",
+      runtimeInvoked: true,
+      runtimeTermination: { reason: "duration_exceeded", limit: 10_000, observed: 10_050 },
+    });
+    expect(JSON.stringify(events)).not.toContain("loop forever");
+
+    const second = await service.sendMessage(agent.id, "small safe task");
+    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
   });
 });

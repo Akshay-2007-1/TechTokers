@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { RunCancelledError } from "./errors.js";
+import { RunCancelledError, RuntimeLimitError } from "./errors.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -129,6 +129,10 @@ export class CodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Codex process");
     }
 
+    const durationLimitMs = request.limits?.durationMs ?? this.config.codexTimeoutMs;
+    const outputLimitBytes = request.limits?.outputBytes ?? this.config.codexMaxOutputBytes;
+    const startedAtMs = Date.now();
+
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
       cwd: request.workspacePath,
@@ -161,7 +165,7 @@ export class CodexRunner implements AgentRunner {
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
+      if (totalBytes > outputLimitBytes) {
         active.outputExceeded = true;
         this.terminate(active);
         return;
@@ -187,7 +191,7 @@ export class CodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       this.terminate(active);
-    }, this.config.codexTimeoutMs);
+    }, durationLimitMs);
     timeout.unref();
 
     try {
@@ -202,10 +206,14 @@ export class CodexRunner implements AgentRunner {
         throw new RunCancelledError();
       }
       if (active.timedOut) {
-        throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
+        throw new RuntimeLimitError(
+          "duration_exceeded",
+          durationLimitMs,
+          Date.now() - startedAtMs,
+        );
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        throw new RuntimeLimitError("output_exceeded", outputLimitBytes, totalBytes);
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";

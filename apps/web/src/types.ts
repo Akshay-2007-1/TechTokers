@@ -1,9 +1,22 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "denied";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "denied"
+  | "terminated";
+export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded";
 
 export interface AgentBudgetPolicy {
   maxRuns: number | null;
   maxTotalTokens: number | null;
+}
+
+export interface AgentRuntimeLimits {
+  maxRunDurationMs: number | null;
+  maxRunOutputBytes: number | null;
 }
 
 export interface AgentBudgetStatus {
@@ -33,6 +46,7 @@ export interface Agent {
   instructions: string;
   budgetPolicy: AgentBudgetPolicy;
   maxPromptChars: number | null;
+  runtimeLimits: AgentRuntimeLimits;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -62,6 +76,7 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  terminationReason: RuntimeTerminationReason | null;
   createdAt: string;
 }
 

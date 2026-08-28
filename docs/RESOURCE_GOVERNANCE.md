@@ -1,10 +1,20 @@
 # Resource Governance Architecture
 
-The team-added Resource Governance component consolidates three per-Agent
-admission controls: maximum input characters, admitted Runs, and cumulative
-model tokens. It is an admission guard, not a predicted-cost or per-Run token
-cap. A Run below a token limit is admitted; its actual Runtime usage may take
-the total over the limit, after which later Runs are denied.
+The team-added Resource Governance component has two enforcement points:
+
+1. **Admission controls** (`sendMessage` → `admitRun`, inside `JsonStore.mutate`):
+   three per-Agent limits — maximum input characters, admitted Runs, and
+   cumulative model tokens. An admission guard, not a predicted-cost or per-Run
+   token cap: a Run below a token limit is admitted; its actual Runtime usage
+   may take the total over the limit, after which later Runs are denied.
+2. **Runtime kill switch** (`executeRun` → `AgentRunner`): two per-Agent limits —
+   maximum wall-clock duration and maximum Runtime output bytes — that
+   **terminate a Run already in progress**. When a limit trips, the Runner kills
+   the Codex process / removes the disposable container, the Run is persisted as
+   `terminated` (distinct from `failed`), a redacted
+   `resource_governance.run_terminated` event is written, and the Agent returns
+   to `ready` so a later Run can proceed. `null` falls back to the server-wide
+   `CODEX_TIMEOUT_MS` / `CODEX_MAX_OUTPUT_BYTES`.
 
 ```mermaid
 flowchart LR
@@ -16,10 +26,12 @@ flowchart LR
   RUN --> BOX["Starter: disposable Codex container"]
   BOX --> ARK["Starter: Ark Responses endpoint"]
   ARK --> RUN --> REC["Team: usage reconciliation evidence"]
+  RUN -->|"per-Run time / output limit hit"| KILL["Team: runtime kill switch\nterminate + cleanup + record"]
+  KILL --> EV
   REC --> EV
   EV --> POLL["Starter: frontend polling/status"]
   classDef team fill:#dbeafe,stroke:#2563eb;
-  class GOV,EV,REC team;
+  class GOV,EV,REC,KILL team;
 ```
 
 ## Pipeline and boundaries
@@ -35,6 +47,7 @@ flowchart LR
 | Container Codex Runtime | `apps/server/src/container-codex-runner.ts`, `ContainerCodexRunner.run()` | workspace/prompt → `docker run ... codex exec --json` | Starter Runtime integration; launches per-turn container. |
 | ModelArk Responses | `config.ts`, `writeCodexConfig()`; generated Codex config | Codex model request → JSON events | Starter provider configuration. The backend never calls the model directly. |
 | Reconciliation | `codex-runner.ts`, `parseCodexEventLine()`; `AgentService.executeRun()` | `turn.completed.usage` → `AgentRun.usage` and usage evidence | Starter event parsing/persistence; team-added reconciliation evidence. |
+| Runtime kill switch | `codex-runner.ts` / `container-codex-runner.ts` `run()`; `AgentService.executeRun()` catch; `recordRuntimeTermination()` | `RunnerRequest.limits` → SIGKILL / `docker rm -f` + `RuntimeLimitError` → `terminated` Run + redacted event | **Team-added runtime enforcement boundary.** The Runner already had global timeout/output kills; this makes them per-Agent, policy-driven, and distinguishes a policy kill from a crash. |
 | Frontend status | `App.tsx`, `pollRun()`, `refreshBudget()` | Run/budget API → current measured state | Starter polling; team-added utilization labels. |
 
 A denied input request is recorded inside `JsonStore.mutate()` and then throws
@@ -47,12 +60,12 @@ emits `turn.completed` and are persisted on the completed Run.
 
 | Brief capability/example | Current implementation | Evidence | Gap |
 | --- | --- | --- | --- |
-| Runaway execution/cost | Timeout, output-byte, CPU/memory/PID Runtime limits; admission budgets | `config.ts`, `container-codex-runner.ts`, governance service | No monetary cost model or per-Run output cap. |
+| Runaway execution/cost | Per-Agent per-Run wall-clock + output-byte kill switch that terminates a Run in progress; admission budgets; CPU/memory/PID container limits | `codex-runner.ts` / `container-codex-runner.ts` (`RuntimeLimitError`), `AgentService.executeRun()`, `recordRuntimeTermination()` | No monetary cost model; token spend inside one admitted Run is bounded only by time/output, not tokens directly. |
 | Quotas | Per-Agent admitted Run quota | `maxRuns`, `budgetReserved` | Single-process JSON-store scope only. |
 | Token budgets | Persisted input + output token admission budget | `totalTokens()`, `evaluateAdmission()` | No prediction/reservation by design; cached input is not double-counted. |
 | Trace/audit evidence | Redacted admission, policy-update, and usage events | `governanceEvents` | No external immutable audit sink or user identity. |
 | Backend policy enforcement | All three controls evaluated before Runtime invocation | `AgentService.sendMessage()` | No cross-instance transaction. |
-| Lifecycle updates | queued/running/completed/failed/cancelled/denied states | `AgentService.executeRun()` | No background recovery queue. |
+| Lifecycle updates | queued/running/completed/failed/cancelled/denied/terminated states | `AgentService.executeRun()` | No background recovery queue. |
 | Recovery/operator control | start/stop/delete, cancellation, restart cleanup | `AgentService`, `WorkspaceManager` | No administrator console or retry workflow. |
 | Identity/authorization | Optional shared application token | `app.ts` auth hook | No user/role identity; event actor is honestly `local_operator`. |
 | Tool/resource policy | Codex workspace sandbox and container limits | `buildCodexArgs()`, `buildContainerRunArgs()` | No enforceable protected-path middleware in this pinned Runtime. |
