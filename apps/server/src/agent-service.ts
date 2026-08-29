@@ -4,13 +4,16 @@ import {
   budgetStatus,
   admissionDenialMessage,
   recordPolicyUpdate,
+  recordRuntimeTermination,
   recordUsageReconciliation,
   resourceLimits,
+  runtimeTerminationMessage,
   unlimitedBudgetPolicy,
+  unlimitedRuntimeLimits,
 } from "./budget-service.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, RunCancelledError, RuntimeLimitError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -79,6 +82,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
       maxPromptChars: input.maxPromptChars ?? null,
+      runtimeLimits: input.runtimeLimits ?? unlimitedRuntimeLimits(),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -105,12 +109,16 @@ export class AgentService {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
       const previousLimits = resourceLimits(agent);
-      const policyChanged = input.budgetPolicy !== undefined || input.maxPromptChars !== undefined;
+      const policyChanged =
+        input.budgetPolicy !== undefined ||
+        input.maxPromptChars !== undefined ||
+        input.runtimeLimits !== undefined;
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
       if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
+      if (input.runtimeLimits !== undefined) agent.runtimeLimits = input.runtimeLimits;
       if (policyChanged) recordPolicyUpdate(database, agent, previousLimits, now());
       agent.lastError = null;
       agent.updatedAt = now();
@@ -202,6 +210,7 @@ export class AgentService {
       usage: null,
       budgetReserved: false,
       runtimeInvoked: false,
+      terminationReason: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -296,11 +305,16 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      const runtimeLimits = agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits();
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+        limits: {
+          durationMs: runtimeLimits.maxRunDurationMs ?? this.config.codexTimeoutMs,
+          outputBytes: runtimeLimits.maxRunOutputBytes ?? this.config.codexMaxOutputBytes,
+        },
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -328,21 +342,35 @@ export class AgentService {
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
-      const message = error instanceof Error ? error.message : String(error);
+      const terminated = error instanceof RuntimeLimitError;
+      const contained = cancelled || terminated;
+      const termination = terminated
+        ? { reason: error.reason, limit: error.limit, observed: error.observed }
+        : null;
+      const message =
+        termination !== null
+          ? runtimeTerminationMessage(termination)
+          : error instanceof Error
+            ? error.message
+            : String(error);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
-          storedRun.status = cancelled ? "cancelled" : "failed";
+          storedRun.status = cancelled ? "cancelled" : terminated ? "terminated" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
+          if (termination !== null) storedRun.terminationReason = termination.reason;
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status = contained ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = contained ? null : message;
           agent.updatedAt = completedAt;
+        }
+        if (termination !== null && storedRun && agent) {
+          recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
         }
       });
     }

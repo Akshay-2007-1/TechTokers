@@ -33,12 +33,17 @@ export class JsonStore {
           ...agent,
           budgetPolicy: agent.budgetPolicy ?? { maxRuns: null, maxTotalTokens: null },
           maxPromptChars: agent.maxPromptChars ?? null,
+          runtimeLimits: agent.runtimeLimits ?? {
+            maxRunDurationMs: null,
+            maxRunOutputBytes: null,
+          },
         })),
         messages: Array.isArray(parsed.messages) ? parsed.messages : [],
         runs: parsedRuns.map((run) => ({
           ...run,
           budgetReserved: run.budgetReserved ?? Boolean(run.startedAt),
           runtimeInvoked: run.runtimeInvoked ?? Boolean(run.startedAt),
+          terminationReason: run.terminationReason ?? null,
         })),
         governanceEvents: Array.isArray(parsed.governanceEvents)
           ? parsed.governanceEvents
@@ -107,6 +112,8 @@ function legacyGovernanceEvents(parsed: unknown): Database["governanceEvents"] {
         maxRuns: typeof event.maxRuns === "number" ? event.maxRuns : null,
         maxTotalTokens: typeof event.maxTotalTokens === "number" ? event.maxTotalTokens : null,
         maxInputCharacters: null,
+        maxRunDurationMs: null,
+        maxRunOutputBytes: null,
       },
       runtimeInvoked: false,
       actualTokensConsumed: null,

@@ -5,6 +5,7 @@ import type {
   AgentBudgetPolicy,
   AgentBudgetStatus,
   AgentRun,
+  AgentRuntimeLimits,
   GovernanceEvent,
   Message,
   SystemInfo,
@@ -24,6 +25,8 @@ const emptyForm = {
   maxRuns: "",
   maxTotalTokens: "",
   maxPromptChars: "",
+  maxRunSeconds: "",
+  maxRunOutputKb: "",
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
@@ -42,6 +45,22 @@ function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
   };
 }
 
+function runtimeLimitsFromForm(form: typeof emptyForm): AgentRuntimeLimits {
+  const scaled = (label: string, raw: string, factor: number, min: number): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(label + " must be a positive number, or blank to use the server default.");
+    }
+    return Math.max(min, Math.round(value * factor));
+  };
+  return {
+    maxRunDurationMs: scaled("Max Run duration", form.maxRunSeconds, 1000, 1000),
+    maxRunOutputBytes: scaled("Max Run output", form.maxRunOutputKb, 1024, 1024),
+  };
+}
+
 function agentPayloadFromForm(form: typeof emptyForm) {
   return {
     name: form.name,
@@ -49,6 +68,7 @@ function agentPayloadFromForm(form: typeof emptyForm) {
     instructions: form.instructions,
     budgetPolicy: budgetPolicyFromForm(form),
     maxPromptChars: form.maxPromptChars === "" ? null : Number(form.maxPromptChars),
+    runtimeLimits: runtimeLimitsFromForm(form),
   };
 }
 
@@ -119,6 +139,41 @@ function BudgetFields({
           step="1"
           value={form.maxTotalTokens}
           onChange={(event) => setForm({ ...form, maxTotalTokens: event.target.value })}
+        />
+      </label>
+    </div>
+  );
+}
+
+function RuntimeLimitFields({
+  form,
+  setForm,
+}: {
+  form: typeof emptyForm;
+  setForm: (next: typeof emptyForm) => void;
+}) {
+  return (
+    <div className="form-grid budget-fields">
+      <label>
+        Max Run duration, seconds (optional)
+        <input
+          type="number"
+          min="1"
+          max="3600"
+          step="1"
+          value={form.maxRunSeconds}
+          onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run output, KB (optional)
+        <input
+          type="number"
+          min="1"
+          max="65536"
+          step="1"
+          value={form.maxRunOutputKb}
+          onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })}
         />
       </label>
     </div>
@@ -244,6 +299,14 @@ export default function App() {
             : String(selected.budgetPolicy.maxTotalTokens),
         maxPromptChars:
           selected.maxPromptChars === null ? "" : String(selected.maxPromptChars),
+        maxRunSeconds:
+          selected.runtimeLimits.maxRunDurationMs === null
+            ? ""
+            : String(Math.round(selected.runtimeLimits.maxRunDurationMs / 1000)),
+        maxRunOutputKb:
+          selected.runtimeLimits.maxRunOutputBytes === null
+            ? ""
+            : String(Math.round(selected.runtimeLimits.maxRunOutputBytes / 1024)),
       });
     }
   }, [selected]);
@@ -622,6 +685,7 @@ export default function App() {
                   />
                 </label>
                 <BudgetFields form={form} setForm={setForm} />
+                <RuntimeLimitFields form={form} setForm={setForm} />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -686,9 +750,17 @@ export default function App() {
                     </div>
                   </article>
                 )}
-                {(activeRun?.status === "failed" || activeRun?.status === "denied") && (
+                {(activeRun?.status === "failed" ||
+                  activeRun?.status === "denied" ||
+                  activeRun?.status === "terminated") && (
                   <article className="run-error">
-                    <strong>{activeRun.status === "denied" ? "Run denied" : "Run failed"}</strong>
+                    <strong>
+                      {activeRun.status === "denied"
+                        ? "Run denied"
+                        : activeRun.status === "terminated"
+                          ? "Run terminated"
+                          : "Run failed"}
+                    </strong>
                     <span>{activeRun.error}</span>
                   </article>
                 )}
@@ -823,6 +895,7 @@ export default function App() {
               />
             </label>
             <BudgetFields form={form} setForm={setForm} />
+            <RuntimeLimitFields form={form} setForm={setForm} />
             <div className="modal-footer">
               <button
                 type="button"

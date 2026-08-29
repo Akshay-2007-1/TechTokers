@@ -76,4 +76,23 @@ describe("HTTP boundary", () => {
     }
     await app.close();
   });
+
+  it("rejects invalid per-Run runtime limits", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    for (const runtimeLimits of [
+      { maxRunDurationMs: 500, maxRunOutputBytes: null },
+      { maxRunDurationMs: 3_600_001, maxRunOutputBytes: null },
+      { maxRunDurationMs: 1_500.5, maxRunOutputBytes: null },
+      { maxRunDurationMs: null, maxRunOutputBytes: 512 },
+      { maxRunDurationMs: null }, // both keys required
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        payload: { name: "Runtime-limited Agent", runtimeLimits },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    await app.close();
+  });
 });

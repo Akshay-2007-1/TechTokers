@@ -1,4 +1,4 @@
-import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRun, GovernanceEvent, Message, SystemInfo } from "./types";
+import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRuntimeLimits, AgentRun, GovernanceEvent, Message, SystemInfo } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -42,6 +42,7 @@ export const api = {
     instructions: string;
     budgetPolicy: AgentBudgetPolicy;
     maxPromptChars: number | null;
+    runtimeLimits: AgentRuntimeLimits;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -55,6 +56,7 @@ export const api = {
       instructions: string;
       budgetPolicy: AgentBudgetPolicy;
       maxPromptChars: number | null;
+      runtimeLimits: AgentRuntimeLimits;
     },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {

@@ -5,10 +5,12 @@ import type {
   Agent,
   AgentBudgetPolicy,
   AgentBudgetStatus,
+  AgentRuntimeLimits,
   AgentRun,
   AppliedResourceLimits,
   Database,
   ResourceObservedUsage,
+  RuntimeTerminationDetail,
 } from "./types.js";
 
 // This is the Resource Governance admission component. The filename remains
@@ -16,6 +18,11 @@ import type {
 export const unlimitedBudgetPolicy = (): AgentBudgetPolicy => ({
   maxRuns: null,
   maxTotalTokens: null,
+});
+
+export const unlimitedRuntimeLimits = (): AgentRuntimeLimits => ({
+  maxRunDurationMs: null,
+  maxRunOutputBytes: null,
 });
 
 export function totalTokens(run: AgentRun): number {
@@ -28,10 +35,13 @@ function countsTowardRuns(run: AgentRun): boolean {
 
 export function resourceLimits(agent: Agent): AppliedResourceLimits {
   const policy = agent.budgetPolicy ?? unlimitedBudgetPolicy();
+  const runtime = agent.runtimeLimits ?? unlimitedRuntimeLimits();
   return {
     maxRuns: policy.maxRuns,
     maxTotalTokens: policy.maxTotalTokens,
     maxInputCharacters: agent.maxPromptChars,
+    maxRunDurationMs: runtime.maxRunDurationMs,
+    maxRunOutputBytes: runtime.maxRunOutputBytes,
   };
 }
 
@@ -162,6 +172,48 @@ export function recordUsageReconciliation(
     actualTokensConsumed: totalTokens(run),
     createdAt: timestamp,
   });
+}
+
+export function recordRuntimeTermination(
+  database: Database,
+  agent: Agent,
+  run: AgentRun,
+  termination: RuntimeTerminationDetail,
+  timestamp: string,
+): void {
+  database.governanceEvents.push({
+    id: randomUUID(),
+    agentId: agent.id,
+    runId: run.id,
+    event: "resource_governance.run_terminated",
+    decision: null,
+    reason: "run_terminated",
+    observedUsage: observedUsage(database, agent, Array.from(run.prompt).length),
+    appliedLimits: resourceLimits(agent),
+    runtimeInvoked: true,
+    actualTokensConsumed: run.usage ? totalTokens(run) : null,
+    runtimeTermination: termination,
+    createdAt: timestamp,
+  });
+}
+
+export function runtimeTerminationMessage(termination: RuntimeTerminationDetail): string {
+  if (termination.reason === "duration_exceeded") {
+    return (
+      "Run terminated by the runtime guard: exceeded the " +
+      termination.limit +
+      " ms per-Run time limit (ran " +
+      termination.observed +
+      " ms)."
+    );
+  }
+  return (
+    "Run terminated by the runtime guard: exceeded the " +
+    termination.limit +
+    " byte per-Run output limit (produced " +
+    termination.observed +
+    " bytes)."
+  );
 }
 
 export function admissionDenialMessage(decision: AdmissionDecision): string {
