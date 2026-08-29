@@ -23,6 +23,9 @@ export const unlimitedBudgetPolicy = (): AgentBudgetPolicy => ({
 export const unlimitedRuntimeLimits = (): AgentRuntimeLimits => ({
   maxRunDurationMs: null,
   maxRunOutputBytes: null,
+  maxRunCpus: null,
+  maxRunMemoryMb: null,
+  maxRunProcesses: null,
 });
 
 export function totalTokens(run: AgentRun): number {
@@ -42,6 +45,9 @@ export function resourceLimits(agent: Agent): AppliedResourceLimits {
     maxInputCharacters: agent.maxPromptChars,
     maxRunDurationMs: runtime.maxRunDurationMs,
     maxRunOutputBytes: runtime.maxRunOutputBytes,
+    maxRunCpus: runtime.maxRunCpus ?? null,
+    maxRunMemoryMb: runtime.maxRunMemoryMb ?? null,
+    maxRunProcesses: runtime.maxRunProcesses ?? null,
   };
 }
 
@@ -177,27 +183,78 @@ export function recordUsageReconciliation(
 export function recordRuntimeTermination(
   database: Database,
   agent: Agent,
-  run: AgentRun,
+  run: AgentRun | null,
   termination: RuntimeTerminationDetail,
   timestamp: string,
 ): void {
   database.governanceEvents.push({
     id: randomUUID(),
     agentId: agent.id,
-    runId: run.id,
+    runId: run?.id ?? null,
     event: "resource_governance.run_terminated",
     decision: null,
     reason: "run_terminated",
-    observedUsage: observedUsage(database, agent, Array.from(run.prompt).length),
+    observedUsage: observedUsage(database, agent, run ? Array.from(run.prompt).length : 0),
     appliedLimits: resourceLimits(agent),
-    runtimeInvoked: true,
-    actualTokensConsumed: run.usage ? totalTokens(run) : null,
+    runtimeInvoked: run !== null,
+    actualTokensConsumed: run?.usage ? totalTokens(run) : null,
     runtimeTermination: termination,
+    actor: termination.reason === "operator_kill" ? "local_operator" : undefined,
     createdAt: timestamp,
   });
 }
 
+/**
+ * Escalating containment: if an Agent has produced `threshold` runtime
+ * terminations within `windowMs`, stop it and record the quarantine so an
+ * operator has to re-enable it. Operator kills are excluded — those are
+ * already a deliberate stop. Returns true when the Agent was quarantined.
+ */
+export function maybeQuarantine(
+  database: Database,
+  agent: Agent,
+  policy: { threshold: number; windowMs: number },
+  timestamp: string,
+): boolean {
+  if (agent.status === "stopped") return false;
+  const windowStart = Date.parse(timestamp) - policy.windowMs;
+  const recent = database.governanceEvents.filter(
+    (event) =>
+      event.agentId === agent.id &&
+      event.event === "resource_governance.run_terminated" &&
+      (event.runtimeTermination?.reason === "duration_exceeded" ||
+        event.runtimeTermination?.reason === "output_exceeded") &&
+      Date.parse(event.createdAt) >= windowStart,
+  ).length;
+  if (recent < policy.threshold) return false;
+  agent.status = "stopped";
+  agent.lastError =
+    "Auto-quarantined after " +
+    recent +
+    " runtime terminations within " +
+    Math.round(policy.windowMs / 60_000) +
+    " min. Start the Agent to clear it.";
+  database.governanceEvents.push({
+    id: randomUUID(),
+    agentId: agent.id,
+    runId: null,
+    event: "resource_governance.agent_quarantined",
+    decision: null,
+    reason: "agent_quarantined",
+    observedUsage: observedUsage(database, agent),
+    appliedLimits: resourceLimits(agent),
+    runtimeInvoked: false,
+    actualTokensConsumed: null,
+    actor: "local_operator",
+    createdAt: timestamp,
+  });
+  return true;
+}
+
 export function runtimeTerminationMessage(termination: RuntimeTerminationDetail): string {
+  if (termination.reason === "operator_kill") {
+    return "Run terminated by the operator kill switch. The Agent has been stopped.";
+  }
   if (termination.reason === "duration_exceeded") {
     return (
       "Run terminated by the runtime guard: exceeded the " +

@@ -19,6 +19,10 @@ const runtimeLimits = z.object({
   maxRunDurationMs: z.number().int().min(1_000).max(3_600_000).nullable(),
   // 1 KiB .. 64 MiB of Runtime output per Run
   maxRunOutputBytes: z.number().int().min(1_024).max(67_108_864).nullable(),
+  // Container-enforced compute caps (ignored by the local-process Runtime).
+  maxRunCpus: z.number().min(0.1).max(64).nullable().optional(),
+  maxRunMemoryMb: z.number().int().min(64).max(131_072).nullable().optional(),
+  maxRunProcesses: z.number().int().min(16).max(16_384).nullable().optional(),
 });
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
@@ -117,6 +121,11 @@ export async function createApp(
   app.post("/api/agents/:id/stop", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return { agent: await service.stopAgent(id) };
+  });
+
+  app.post("/api/agents/:id/kill", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { agent: await service.killAgent(id) };
   });
 
   app.get("/api/agents/:id/messages", async (request) => {

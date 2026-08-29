@@ -27,6 +27,9 @@ const emptyForm = {
   maxPromptChars: "",
   maxRunSeconds: "",
   maxRunOutputKb: "",
+  maxRunCpus: "",
+  maxRunMemoryMb: "",
+  maxRunProcesses: "",
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
@@ -55,9 +58,30 @@ function runtimeLimitsFromForm(form: typeof emptyForm): AgentRuntimeLimits {
     }
     return Math.max(min, Math.round(value * factor));
   };
+  const whole = (label: string, raw: string, min: number, max: number): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(label + " must be a positive number, or blank to use the server default.");
+    }
+    return Math.min(max, Math.max(min, Math.round(value)));
+  };
+  const cpus = (): number | null => {
+    const trimmed = form.maxRunCpus.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error("Max Run CPUs must be a positive number, or blank to use the server default.");
+    }
+    return Math.min(64, Math.max(0.1, value));
+  };
   return {
     maxRunDurationMs: scaled("Max Run duration", form.maxRunSeconds, 1000, 1000),
     maxRunOutputBytes: scaled("Max Run output", form.maxRunOutputKb, 1024, 1024),
+    maxRunCpus: cpus(),
+    maxRunMemoryMb: whole("Max Run memory", form.maxRunMemoryMb, 64, 131_072),
+    maxRunProcesses: whole("Max Run processes", form.maxRunProcesses, 16, 16_384),
   };
 }
 
@@ -174,6 +198,39 @@ function RuntimeLimitFields({
           step="1"
           value={form.maxRunOutputKb}
           onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run CPUs (optional, container only)
+        <input
+          type="number"
+          min="0.1"
+          max="64"
+          step="0.1"
+          value={form.maxRunCpus}
+          onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run memory, MB (optional, container only)
+        <input
+          type="number"
+          min="64"
+          max="131072"
+          step="1"
+          value={form.maxRunMemoryMb}
+          onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run processes (optional, container only)
+        <input
+          type="number"
+          min="16"
+          max="16384"
+          step="1"
+          value={form.maxRunProcesses}
+          onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })}
         />
       </label>
     </div>
@@ -307,6 +364,18 @@ export default function App() {
           selected.runtimeLimits.maxRunOutputBytes === null
             ? ""
             : String(Math.round(selected.runtimeLimits.maxRunOutputBytes / 1024)),
+        maxRunCpus:
+          selected.runtimeLimits.maxRunCpus == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunCpus),
+        maxRunMemoryMb:
+          selected.runtimeLimits.maxRunMemoryMb == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunMemoryMb),
+        maxRunProcesses:
+          selected.runtimeLimits.maxRunProcesses == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunProcesses),
       });
     }
   }, [selected]);
@@ -359,6 +428,31 @@ export default function App() {
         await api.stopAgent(selected.id);
       }
       await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const killAgent = async () => {
+    if (!selected) return;
+    if (
+      !window.confirm(
+        "Kill switch: force-terminate any running task and stop " + selected.name + "?",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.killAgent(selected.id);
+      await Promise.all([refreshAgents(), refreshBudget(selected.id)]);
+      if (selectedIdRef.current === selected.id) {
+        const latest = await api.runs(selected.id);
+        setActiveRun(latest.runs[0] ?? null);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -604,6 +698,14 @@ export default function App() {
                   disabled={busy}
                 >
                   {selected.status === "stopped" ? "Start" : "Stop"}
+                </button>
+                <button
+                  className="button button-danger"
+                  onClick={killAgent}
+                  disabled={busy || selected.status === "stopped"}
+                  title="Force-terminate the active Run and stop this Agent"
+                >
+                  Kill
                 </button>
                 <button
                   className="button button-danger"

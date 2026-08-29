@@ -3,6 +3,7 @@ import {
   admitRun,
   budgetStatus,
   admissionDenialMessage,
+  maybeQuarantine,
   recordPolicyUpdate,
   recordRuntimeTermination,
   recordUsageReconciliation,
@@ -21,6 +22,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RuntimeTerminationDetail,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -30,6 +32,7 @@ const now = () => new Date().toISOString();
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly operatorKillRequests = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -149,6 +152,42 @@ export class AgentService {
     this.getAgent(id);
     await this.cancelExecution(id);
     return this.setStatus(id, "stopped");
+  }
+
+  /**
+   * Operator kill switch: force-terminate any Run in progress and stop the
+   * Agent. Unlike stopAgent, an in-flight Run is recorded as `terminated`
+   * (reason `operator_kill`) with a governance event, and the Agent stays
+   * stopped until an operator explicitly starts it again.
+   */
+  async killAgent(id: string): Promise<Agent> {
+    this.getAgent(id);
+    const hadActiveRun = this.activeExecutions.has(id);
+    this.operatorKillRequests.add(id);
+    try {
+      await this.cancelExecution(id);
+    } finally {
+      this.operatorKillRequests.delete(id);
+    }
+    return this.store.mutate((database) => {
+      const stored = database.agents.find((item) => item.id === id);
+      if (!stored) {
+        throw new HttpError(404, "Agent not found");
+      }
+      stored.status = "stopped";
+      stored.lastError = null;
+      stored.updatedAt = now();
+      if (!hadActiveRun) {
+        recordRuntimeTermination(
+          database,
+          stored,
+          null,
+          { reason: "operator_kill", limit: 0, observed: 0 },
+          now(),
+        );
+      }
+      return structuredClone(stored);
+    });
   }
 
   getMessages(agentId: string): Message[] {
@@ -314,6 +353,9 @@ export class AgentService {
         limits: {
           durationMs: runtimeLimits.maxRunDurationMs ?? this.config.codexTimeoutMs,
           outputBytes: runtimeLimits.maxRunOutputBytes ?? this.config.codexMaxOutputBytes,
+          cpus: runtimeLimits.maxRunCpus ?? this.config.containerCpuLimit,
+          memoryMb: runtimeLimits.maxRunMemoryMb ?? this.config.containerMemoryMb,
+          processes: runtimeLimits.maxRunProcesses ?? this.config.containerPidsLimit,
         },
       });
       const completedAt = now();
@@ -341,12 +383,18 @@ export class AgentService {
       });
     } catch (error) {
       const completedAt = now();
-      const cancelled = error instanceof RunCancelledError;
-      const terminated = error instanceof RuntimeLimitError;
+      const operatorKill =
+        error instanceof RunCancelledError &&
+        this.operatorKillRequests.has(agentAtStart.id);
+      const cancelled = error instanceof RunCancelledError && !operatorKill;
+      const runtimeLimit = error instanceof RuntimeLimitError;
+      const terminated = runtimeLimit || operatorKill;
       const contained = cancelled || terminated;
-      const termination = terminated
+      const termination: RuntimeTerminationDetail | null = runtimeLimit
         ? { reason: error.reason, limit: error.limit, observed: error.observed }
-        : null;
+        : operatorKill
+          ? { reason: "operator_kill", limit: 0, observed: 0 }
+          : null;
       const message =
         termination !== null
           ? runtimeTerminationMessage(termination)
@@ -364,13 +412,24 @@ export class AgentService {
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = contained ? "ready" : "error";
+            agent.status = operatorKill ? "stopped" : contained ? "ready" : "error";
           }
           agent.lastError = contained ? null : message;
           agent.updatedAt = completedAt;
         }
         if (termination !== null && storedRun && agent) {
           recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
+          if (termination.reason !== "operator_kill") {
+            maybeQuarantine(
+              database,
+              agent,
+              {
+                threshold: this.config.runtimeQuarantineThreshold,
+                windowMs: this.config.runtimeQuarantineWindowMs,
+              },
+              completedAt,
+            );
+          }
         }
       });
     }

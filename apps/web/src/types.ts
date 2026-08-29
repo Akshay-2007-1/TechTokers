@@ -7,7 +7,10 @@ export type RunStatus =
   | "cancelled"
   | "denied"
   | "terminated";
-export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded";
+export type RuntimeTerminationReason =
+  | "duration_exceeded"
+  | "output_exceeded"
+  | "operator_kill";
 
 export interface AgentBudgetPolicy {
   maxRuns: number | null;
@@ -17,6 +20,9 @@ export interface AgentBudgetPolicy {
 export interface AgentRuntimeLimits {
   maxRunDurationMs: number | null;
   maxRunOutputBytes: number | null;
+  maxRunCpus: number | null;
+  maxRunMemoryMb: number | null;
+  maxRunProcesses: number | null;
 }
 
 export interface AgentBudgetStatus {

@@ -6,6 +6,7 @@ import type { AgentService } from "./agent-service.js";
 const service = {
   listAgents: () => [],
   systemInfo: async () => ({}),
+  killAgent: async (id: string) => ({ id, status: "stopped" }),
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
@@ -84,7 +85,10 @@ describe("HTTP boundary", () => {
       { maxRunDurationMs: 3_600_001, maxRunOutputBytes: null },
       { maxRunDurationMs: 1_500.5, maxRunOutputBytes: null },
       { maxRunDurationMs: null, maxRunOutputBytes: 512 },
-      { maxRunDurationMs: null }, // both keys required
+      { maxRunDurationMs: null }, // both required keys must be present
+      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunCpus: 0 },
+      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunMemoryMb: 32 },
+      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunProcesses: 4 },
     ]) {
       const response = await app.inject({
         method: "POST",
@@ -93,6 +97,17 @@ describe("HTTP boundary", () => {
       });
       expect(response.statusCode).toBe(400);
     }
+    await app.close();
+  });
+
+  it("routes the operator kill switch to the service", async () => {
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/11111111-1111-4111-8111-111111111111/kill",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().agent).toMatchObject({ status: "stopped" });
     await app.close();
   });
 });

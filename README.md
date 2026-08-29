@@ -224,6 +224,26 @@ checks only improve feedback.
 - This is admission control, not a per-Run token cap: an admitted Run can take
   the total above its token limit, after which later Runs are denied.
 
+### Runtime kill switch
+
+Admission control cannot stop a Run that has already started. Three
+runtime-side controls contain a Run in progress and expose a `terminated`
+Run state plus a redacted `resource_governance.run_terminated` event:
+
+- **Per-Run duration / output limits** (`maxRunDurationMs`, `maxRunOutputBytes`)
+  kill the Runtime process when a single Run runs too long or floods stdout.
+- **Per-Run compute caps** (`maxRunCpus`, `maxRunMemoryMb`, `maxRunProcesses`)
+  are passed to the container engine as `--cpus / --memory / --pids-limit`.
+  Container Runtime only — the local-process Runtime has no cgroup and ignores
+  them, falling back to the server-wide `CONTAINER_*` values.
+- **Operator kill switch** (`POST /api/agents/:id/kill`, the red **Kill**
+  button) force-terminates any active Run and stops the Agent until an
+  operator starts it again.
+- **Auto-quarantine**: after `RUNTIME_QUARANTINE_THRESHOLD` runtime
+  terminations within `RUNTIME_QUARANTINE_WINDOW_MS` (default 3 in 10 min) the
+  Agent is stopped automatically with a `resource_governance.agent_quarantined`
+  event. Starting the Agent clears it.
+
 Current budget state and redacted admission evidence are available at
 `GET /api/agents/:id/budget`. Governance events contain IDs, limits, counters,
 reason, and timestamp only—never prompts, model output, or credentials. The

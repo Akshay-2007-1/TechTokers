@@ -75,6 +75,10 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
+  killAgent: (id: string) =>
+    request<{ agent: Agent }>("/api/agents/" + id + "/kill", {
+      method: "POST",
+    }),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
