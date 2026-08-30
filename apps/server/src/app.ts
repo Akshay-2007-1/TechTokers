@@ -14,12 +14,17 @@ const budgetPolicy = z.object({
   maxRuns: z.number().int().min(0).max(1_000_000).nullable(),
   maxTotalTokens: z.number().int().min(0).max(1_000_000_000).nullable(),
 });
+const runtimeLimits = z.object({
+  maxRunDurationMs: z.number().int().min(1_000).max(3_600_000).nullable(),
+  maxRunOutputBytes: z.number().int().min(1_024).max(67_108_864).nullable(),
+});
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   budgetPolicy: budgetPolicy.optional(),
   maxPromptChars: z.number().int().min(1).max(50_000).nullable().optional(),
+  runtimeLimits: runtimeLimits.optional(),
   workspaceApprovalMode: z.enum(["auto", "review"]).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(

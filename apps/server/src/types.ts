@@ -1,7 +1,8 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type WorkspaceApprovalMode = "auto" | "review";
-export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied";
+export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied" | "terminated";
 export type MessageRole = "user" | "assistant";
+export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded";
 
 export interface Agent {
   id: string;
@@ -11,6 +12,7 @@ export interface Agent {
   budgetPolicy: AgentBudgetPolicy;
   maxPromptChars: number | null;
   workspaceApprovalMode: WorkspaceApprovalMode;
+  runtimeLimits: AgentRuntimeLimits;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -44,6 +46,7 @@ export interface AgentRun {
   usage: RunUsage | null;
   budgetReserved: boolean;
   runtimeInvoked: boolean;
+  terminationReason: RuntimeTerminationReason | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -60,6 +63,8 @@ export interface AgentBudgetPolicy {
   maxRuns: number | null;
   maxTotalTokens: number | null;
 }
+export interface AgentRuntimeLimits { maxRunDurationMs: number | null; maxRunOutputBytes: number | null; }
+export interface RuntimeTerminationDetail { reason: RuntimeTerminationReason; limit: number; observed: number; }
 
 export type AdmissionReason =
   | "within_limits"
@@ -78,6 +83,8 @@ export interface AppliedResourceLimits {
   maxRuns: number | null;
   maxTotalTokens: number | null;
   maxInputCharacters: number | null;
+  maxRunDurationMs: number | null;
+  maxRunOutputBytes: number | null;
 }
 
 export interface AdmissionDecision {
@@ -91,7 +98,8 @@ export interface AdmissionDecision {
 export type GovernanceEventName =
   | "resource_governance.admission"
   | "resource_governance.policy_updated"
-  | "resource_governance.usage_reconciled";
+  | "resource_governance.usage_reconciled"
+  | "resource_governance.run_terminated";
 
 export interface GovernanceEvent {
   id: string;
@@ -99,13 +107,14 @@ export interface GovernanceEvent {
   runId: string | null;
   event: GovernanceEventName;
   decision: AdmissionOutcome | null;
-  reason: AdmissionReason | "policy_updated" | "usage_reconciled";
+  reason: AdmissionReason | "policy_updated" | "usage_reconciled" | "run_terminated";
   observedUsage: ResourceObservedUsage;
   appliedLimits: AppliedResourceLimits;
   runtimeInvoked: boolean;
   actualTokensConsumed: number | null;
   previousLimits?: AppliedResourceLimits | undefined;
   actor?: "local_operator" | undefined;
+  runtimeTermination?: RuntimeTerminationDetail | undefined;
   createdAt: string;
 }
 
@@ -132,6 +141,7 @@ export interface CreateAgentInput {
   instructions?: string | undefined;
   budgetPolicy?: AgentBudgetPolicy | undefined;
   maxPromptChars?: number | null | undefined;
+  runtimeLimits?: AgentRuntimeLimits | undefined;
   workspaceApprovalMode?: WorkspaceApprovalMode | undefined;
 }
 
@@ -141,6 +151,7 @@ export interface UpdateAgentInput {
   instructions?: string | undefined;
   budgetPolicy?: AgentBudgetPolicy | undefined;
   maxPromptChars?: number | null | undefined;
+  runtimeLimits?: AgentRuntimeLimits | undefined;
   workspaceApprovalMode?: WorkspaceApprovalMode | undefined;
 }
 
@@ -155,6 +166,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  limits?: { durationMs: number; outputBytes: number } | undefined;
 }
 
 export interface AgentRunner {

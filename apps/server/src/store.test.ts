@@ -80,13 +80,19 @@ describe("JsonStore", () => {
     expect(data.governanceEvents).toEqual([]);
     expect(data.agents[0]?.budgetPolicy).toEqual({ maxRuns: null, maxTotalTokens: null });
     expect(data.agents[0]?.maxPromptChars).toBeNull();
+    expect(data.agents[0]?.runtimeLimits).toEqual({
+      maxRunDurationMs: null,
+      maxRunOutputBytes: null,
+    });
     expect(data.runs.find((run) => run.id === "r-started")).toMatchObject({
       budgetReserved: true,
       runtimeInvoked: true,
+      terminationReason: null,
     });
     expect(data.runs.find((run) => run.id === "r-queued")).toMatchObject({
       budgetReserved: false,
       runtimeInvoked: false,
+      terminationReason: null,
     });
   });
 
