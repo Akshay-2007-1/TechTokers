@@ -42,6 +42,7 @@ export const api = {
     instructions: string;
     budgetPolicy: AgentBudgetPolicy;
     maxPromptChars: number | null;
+    workspaceApprovalMode: "auto" | "review";
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -55,6 +56,7 @@ export const api = {
       instructions: string;
       budgetPolicy: AgentBudgetPolicy;
       maxPromptChars: number | null;
+      workspaceApprovalMode: "auto" | "review";
     },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {

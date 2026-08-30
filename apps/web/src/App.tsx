@@ -25,6 +25,7 @@ const emptyForm = {
   maxRuns: "",
   maxTotalTokens: "",
   maxPromptChars: "",
+  workspaceApprovalMode: "review" as "auto" | "review",
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
@@ -50,6 +51,7 @@ function agentPayloadFromForm(form: typeof emptyForm) {
     instructions: form.instructions,
     budgetPolicy: budgetPolicyFromForm(form),
     maxPromptChars: form.maxPromptChars === "" ? null : Number(form.maxPromptChars),
+    workspaceApprovalMode: form.workspaceApprovalMode,
   };
 }
 
@@ -246,6 +248,7 @@ export default function App() {
             : String(selected.budgetPolicy.maxTotalTokens),
         maxPromptChars:
           selected.maxPromptChars === null ? "" : String(selected.maxPromptChars),
+        workspaceApprovalMode: selected.workspaceApprovalMode,
       });
     }
   }, [selected]);
@@ -296,6 +299,19 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const setWorkspaceMode = async (workspaceApprovalMode: "auto" | "review") => {
+    if (!selected) return;
+    setError(null);
+    try {
+      await api.updateAgent(selected.id, {
+        name: selected.name, description: selected.description, instructions: selected.instructions,
+        budgetPolicy: selected.budgetPolicy, maxPromptChars: selected.maxPromptChars, workspaceApprovalMode,
+      });
+      setForm({ ...form, workspaceApprovalMode });
+      await refreshAgents();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
 
   const toggleAgent = async () => {
@@ -742,6 +758,13 @@ export default function App() {
                   rows={3}
                 />
                 <div className="composer-footer">
+                  <label className="workspace-mode" title="Controls how workspace changes are handled">
+                    <span>Changes</span>
+                    <select value={selected.workspaceApprovalMode} onChange={(event) => void setWorkspaceMode(event.target.value as "auto" | "review")} disabled={selected.status === "busy"}>
+                      <option value="review">Review</option>
+                      <option value="auto">Auto</option>
+                    </select>
+                  </label>
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"} · {promptLimit === null
                       ? "No prompt limit"
@@ -834,6 +857,13 @@ export default function App() {
                   setForm({ ...form, maxPromptChars: event.target.value })
                 }
               />
+            </label>
+            <label>
+              Workspace change mode
+              <select value={form.workspaceApprovalMode} onChange={(event) => setForm({ ...form, workspaceApprovalMode: event.target.value as "auto" | "review" })}>
+                <option value="review">Review every change</option>
+                <option value="auto">Auto-apply ordinary code changes</option>
+              </select>
             </label>
             <label>
               Instructions

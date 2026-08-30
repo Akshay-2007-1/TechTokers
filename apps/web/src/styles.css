@@ -886,6 +886,29 @@ textarea:focus {
   align-items: center;
 }
 
+.workspace-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  color: #77766f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.workspace-mode select {
+  appearance: none;
+  border: 1px solid #d8d5cd;
+  border-radius: 999px;
+  background: #fff;
+  color: #494742;
+  padding: 5px 25px 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workspace-mode select:focus { outline: 2px solid rgba(105, 84, 217, 0.3); outline-offset: 2px; }
+
 .composer-footer > span {
   color: #999992;
   font-size: 8px;

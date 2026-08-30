@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -49,5 +50,23 @@ describe("WorkspaceTransactionApplier", () => {
     await expect(new WorkspaceTransactionApplier(path.join(root, "transactions"), 3).apply(persistent, staging, changes)).rejects.toThrow("Injected");
     await expect(readFile(path.join(persistent, "keep.txt"), "utf8")).resolves.toBe("before");
     await expect(readFile(path.join(persistent, "delete.txt"), "utf8")).resolves.toBe("remove");
+  });
+  it("recovers an interrupted apply before another transaction can begin", async () => {
+    const { root, persistent, staging } = await fixture();
+    const transactions = path.join(root, "transactions"); const transaction = path.join(transactions, "interrupted");
+    await mkdir(path.join(transaction, "backup"), { recursive: true });
+    await writeFile(path.join(transaction, "backup", "keep.txt"), "before");
+    await writeFile(path.join(persistent, "keep.txt"), "partially-applied");
+    const baseHash = createHash("sha256").update("before").digest("hex");
+    await writeFile(path.join(transaction, "journal.json"), JSON.stringify({
+      id: "interrupted", state: "applying", persistent,
+      changes: [{ kind: "modified", path: "keep.txt", baseHash, stagedHash: "unused" }],
+      originals: [{ path: "keep.txt", existed: true, hash: baseHash }], completedPaths: ["keep.txt"], createdAt: new Date().toISOString(),
+    }));
+    await new WorkspaceTransactionApplier(transactions).recover();
+    await expect(readFile(path.join(persistent, "keep.txt"), "utf8")).resolves.toBe("before");
+    const journal = JSON.parse(await readFile(path.join(transaction, "journal.json"), "utf8"));
+    expect(journal.state).toBe("rolled_back");
+    await expect(readFile(path.join(staging, "keep.txt"), "utf8")).resolves.toBe("after");
   });
 });

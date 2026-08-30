@@ -7,6 +7,15 @@ export type WorkspaceChange =
   | { kind: "modified"; path: string; baseHash: string; stagedHash: string }
   | { kind: "deleted"; path: string; baseHash: string };
 
+export type WorkspaceChangeDisposition = "auto_apply" | "needs_approval" | "deny";
+const autoExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".go", ".rs", ".java", ".css", ".html", ".md", ".txt"]);
+const reviewNames = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "dockerfile", "compose.yml", "compose.yaml"]);
+export function classifyWorkspaceChanges(changes: WorkspaceChange[]): WorkspaceChangeDisposition {
+  for (const change of changes) { const safe = safeRelativePath(change.path); const name = path.posix.basename(safe).toLowerCase(); if (safe === ".git" || safe.startsWith(".git/") || name.includes("credential") || name.includes("secret") || name.endsWith(".pem") || name.endsWith(".key")) return "deny"; }
+  if (changes.some((change) => change.kind === "deleted")) return "needs_approval";
+  return changes.every((change) => autoExtensions.has(path.posix.extname(change.path).toLowerCase()) && !reviewNames.has(path.posix.basename(change.path).toLowerCase())) ? "auto_apply" : "needs_approval";
+}
+
 const protectedPath = (relativePath: string) =>
   relativePath === ".env" || relativePath.startsWith(".env.");
 

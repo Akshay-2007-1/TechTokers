@@ -108,6 +108,20 @@ describe("Agent lifecycle", () => {
     await expect(readFile(path.join(agent.workspacePath, ".env"), "utf8")).resolves.toBe("protected");
   });
 
+  it("auto-applies ordinary source edits in auto mode", async () => {
+    class SourceRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "hello.ts"), "export const hello = 'world';\n", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new SourceRunner());
+    const agent = await service.createAgent({ name: "Auto", workspaceApprovalMode: "auto" });
+    const { run } = await service.sendMessage(agent.id, "write source");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect(readFile(path.join(agent.workspacePath, "hello.ts"), "utf8")).resolves.toContain("world");
+  });
+
   it("applies a pending staging change exactly once after approval", async () => {
     class StagingRunner extends FakeRunner {
       async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -142,6 +156,22 @@ describe("Agent lifecycle", () => {
     const next = await service.sendMessage(agent.id, "try again");
     await expect.poll(() => service.getRun(next.run.id).status).toBe("awaiting_approval");
     expect(runner.requests.at(-1)?.prompt).toContain("previous proposed workspace changes were denied");
+  });
+
+  it("requires a pending workspace proposal to be decided before the next Run", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "pending.ts"), "export {};\n", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new StagingRunner());
+    const agent = await service.createAgent({ name: "Pending" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await expect(service.sendMessage(agent.id, "continue")).rejects.toMatchObject({ statusCode: 409 });
+    await service.decideWorkspaceChangeSet(agent.id, run.id, false);
+    await expect(service.sendMessage(agent.id, "continue")).resolves.toBeDefined();
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

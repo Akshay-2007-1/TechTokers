@@ -34,6 +34,7 @@ export class JsonStore {
           ...agent,
           budgetPolicy: agent.budgetPolicy ?? { maxRuns: null, maxTotalTokens: null },
           maxPromptChars: agent.maxPromptChars ?? null,
+          workspaceApprovalMode: agent.workspaceApprovalMode ?? "review",
         })),
         messages: Array.isArray(parsed.messages) ? parsed.messages : [],
         runs: parsedRuns.map((run) => ({

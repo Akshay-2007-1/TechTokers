@@ -20,6 +20,7 @@ const createAgentBody = z.object({
   instructions: z.string().max(10_000).optional(),
   budgetPolicy: budgetPolicy.optional(),
   maxPromptChars: z.number().int().min(1).max(50_000).nullable().optional(),
+  workspaceApprovalMode: z.enum(["auto", "review"]).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,

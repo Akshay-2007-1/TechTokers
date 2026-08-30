@@ -21,7 +21,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import { createStagingWorkspace, detectWorkspaceChanges, discardStagingWorkspace } from "./transactional-workspace.js";
+import { classifyWorkspaceChanges, createStagingWorkspace, detectWorkspaceChanges, discardStagingWorkspace } from "./transactional-workspace.js";
 import { WorkspaceTransactionApplier } from "./workspace-transaction-applier.js";
 import path from "node:path";
 
@@ -41,6 +41,9 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    // Pending proposals are intentionally retained. Only an interrupted apply is
+    // recovered, because it may have touched the persistent workspace.
+    await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).recover();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
@@ -53,6 +56,14 @@ export class AgentService {
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
+        }
+      }
+      for (const changeSet of database.workspaceChangeSets) {
+        if (changeSet.status === "applying") {
+          changeSet.status = "apply_failed";
+          changeSet.decidedAt = now();
+          const run = database.runs.find((item) => item.id === changeSet.runId);
+          if (run) { run.status = "failed"; run.error = "Server restarted while workspace changes were being applied"; run.completedAt = now(); }
         }
       }
     });
@@ -117,6 +128,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
       maxPromptChars: input.maxPromptChars ?? null,
+      workspaceApprovalMode: input.workspaceApprovalMode ?? "review",
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -149,6 +161,7 @@ export class AgentService {
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
       if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
+      if (input.workspaceApprovalMode !== undefined) agent.workspaceApprovalMode = input.workspaceApprovalMode;
       if (policyChanged) recordPolicyUpdate(database, agent, previousLimits, now());
       agent.lastError = null;
       agent.updatedAt = now();
@@ -263,6 +276,9 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      if (database.workspaceChangeSets.some((item) => item.agentId === agentId && item.status === "pending")) {
+        throw new HttpError(409, "Review or deny this Agent's pending workspace changes before sending another message");
+      }
       const decision = admitRun(
         database,
         storedAgent,
@@ -350,15 +366,16 @@ export class AgentService {
       });
       const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);
       const completedAt = now();
+      const disposition = agentAtStart.workspaceApprovalMode === "auto" ? classifyWorkspaceChanges(changes) : "needs_approval";
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
-        storedRun.status = changes.length ? "awaiting_approval" : "completed";
+        storedRun.status = changes.length && disposition === "needs_approval" ? "awaiting_approval" : changes.length && disposition === "auto_apply" ? "running" : disposition === "deny" ? "denied" : "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
-        if (changes.length) database.workspaceChangeSets.push({ id: randomUUID(), agentId: agent.id, runId: run.id, stagingPath, status: "pending", changes, createdAt: completedAt, decidedAt: null });
+        if (changes.length && disposition !== "auto_apply") database.workspaceChangeSets.push({ id: randomUUID(), agentId: agent.id, runId: run.id, stagingPath, status: disposition === "deny" ? "denied" : "pending", changes, createdAt: completedAt, decidedAt: disposition === "deny" ? completedAt : null });
         if (result.usage) recordUsageReconciliation(database, agent, storedRun, completedAt);
         database.messages.push({
           id: randomUUID(),
@@ -373,7 +390,8 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
-      if (!changes.length) await discardStagingWorkspace(stagingPath);
+      if (changes.length && disposition === "auto_apply") { await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).apply(agentAtStart.workspacePath, stagingPath, changes); await this.store.mutate((database) => { const stored = database.runs.find((item) => item.id === run.id); if (stored) { stored.status = "completed"; stored.completedAt = now(); } }); await discardStagingWorkspace(stagingPath); }
+      else if (!changes.length || disposition === "deny") await discardStagingWorkspace(stagingPath);
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;

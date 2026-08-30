@@ -1,4 +1,5 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
+export type WorkspaceApprovalMode = "auto" | "review";
 export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied";
 
 export interface AgentBudgetPolicy {
@@ -33,6 +34,7 @@ export interface Agent {
   instructions: string;
   budgetPolicy: AgentBudgetPolicy;
   maxPromptChars: number | null;
+  workspaceApprovalMode: WorkspaceApprovalMode;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
