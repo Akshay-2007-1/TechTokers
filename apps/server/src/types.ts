@@ -1,17 +1,8 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "denied"
-  | "terminated";
+export type WorkspaceApprovalMode = "auto" | "review";
+export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied" | "terminated";
 export type MessageRole = "user" | "assistant";
-export type RuntimeTerminationReason =
-  | "duration_exceeded"
-  | "output_exceeded"
-  | "operator_kill";
+export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded" | "operator_kill";
 
 export interface Agent {
   id: string;
@@ -20,6 +11,7 @@ export interface Agent {
   instructions: string;
   budgetPolicy: AgentBudgetPolicy;
   maxPromptChars: number | null;
+  workspaceApprovalMode: WorkspaceApprovalMode;
   runtimeLimits: AgentRuntimeLimits;
   status: AgentStatus;
   workspacePath: string;
@@ -60,32 +52,25 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export interface WorkspaceChangeSet {
+  id: string; agentId: string; runId: string; stagingPath: string;
+  status: "pending" | "applying" | "approved" | "denied" | "expired" | "conflicted" | "apply_failed";
+  changes: import("./transactional-workspace.js").WorkspaceChange[];
+  createdAt: string; decidedAt: string | null;
+}
+
 export interface AgentBudgetPolicy {
   maxRuns: number | null;
   maxTotalTokens: number | null;
 }
-
-/**
- * Runtime-side controls that terminate a single Run in progress, in contrast to
- * AgentBudgetPolicy which denies a Run before the Runtime is invoked. `null`
- * means fall back to the server-wide CODEX_TIMEOUT_MS / CODEX_MAX_OUTPUT_BYTES.
- */
 export interface AgentRuntimeLimits {
   maxRunDurationMs: number | null;
   maxRunOutputBytes: number | null;
-  // Container-enforced per-Run resource caps. `null` falls back to the
-  // server-wide CONTAINER_* limits. Ignored by the local-process Runtime,
-  // which has no cgroup to constrain.
   maxRunCpus?: number | null | undefined;
   maxRunMemoryMb?: number | null | undefined;
   maxRunProcesses?: number | null | undefined;
 }
-
-export interface RuntimeTerminationDetail {
-  reason: RuntimeTerminationReason;
-  limit: number;
-  observed: number;
-}
+export interface RuntimeTerminationDetail { reason: RuntimeTerminationReason; limit: number; observed: number; }
 
 export type AdmissionReason =
   | "within_limits"
@@ -133,13 +118,7 @@ export interface GovernanceEvent {
   runId: string | null;
   event: GovernanceEventName;
   decision: AdmissionOutcome | null;
-  reason:
-    | AdmissionReason
-    | "policy_updated"
-    | "usage_reconciled"
-    | "run_terminated"
-    | "operator_kill"
-    | "agent_quarantined";
+  reason: AdmissionReason | "policy_updated" | "usage_reconciled" | "run_terminated" | "operator_kill" | "agent_quarantined";
   observedUsage: ResourceObservedUsage;
   appliedLimits: AppliedResourceLimits;
   runtimeInvoked: boolean;
@@ -164,6 +143,7 @@ export interface Database {
   messages: Message[];
   runs: AgentRun[];
   governanceEvents: GovernanceEvent[];
+  workspaceChangeSets: WorkspaceChangeSet[];
 }
 
 export interface CreateAgentInput {
@@ -173,6 +153,7 @@ export interface CreateAgentInput {
   budgetPolicy?: AgentBudgetPolicy | undefined;
   maxPromptChars?: number | null | undefined;
   runtimeLimits?: AgentRuntimeLimits | undefined;
+  workspaceApprovalMode?: WorkspaceApprovalMode | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -182,6 +163,7 @@ export interface UpdateAgentInput {
   budgetPolicy?: AgentBudgetPolicy | undefined;
   maxPromptChars?: number | null | undefined;
   runtimeLimits?: AgentRuntimeLimits | undefined;
+  workspaceApprovalMode?: WorkspaceApprovalMode | undefined;
 }
 
 export interface RunnerResult {
@@ -190,21 +172,12 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
-export interface RunResourceLimits {
-  durationMs: number;
-  outputBytes: number;
-  // Container-only knobs; the local-process Runtime ignores them.
-  cpus?: number | undefined;
-  memoryMb?: number | undefined;
-  processes?: number | undefined;
-}
-
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
-  limits?: RunResourceLimits | undefined;
+  limits?: { durationMs: number; outputBytes: number; cpus?: number; memoryMb?: number; processes?: number } | undefined;
 }
 
 export interface AgentRunner {

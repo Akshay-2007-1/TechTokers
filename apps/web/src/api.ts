@@ -1,4 +1,4 @@
-import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRuntimeLimits, AgentRun, GovernanceEvent, Message, SystemInfo } from "./types";
+import type { Agent, AgentBudgetPolicy, AgentBudgetStatus, AgentRun, AgentRuntimeLimits, GovernanceEvent, Message, SystemInfo, WorkspaceChangeSet } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -43,6 +43,7 @@ export const api = {
     budgetPolicy: AgentBudgetPolicy;
     maxPromptChars: number | null;
     runtimeLimits: AgentRuntimeLimits;
+    workspaceApprovalMode: "auto" | "review";
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -57,6 +58,7 @@ export const api = {
       budgetPolicy: AgentBudgetPolicy;
       maxPromptChars: number | null;
       runtimeLimits: AgentRuntimeLimits;
+      workspaceApprovalMode: "auto" | "review";
     },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
@@ -94,4 +96,8 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  pendingWorkspaceChanges: (agentId: string) =>
+    request<{ changeSet: WorkspaceChangeSet | null }>(`/api/agents/${agentId}/workspace-changes/pending`),
+  workspaceChanges: (agentId: string, runId: string) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes`),
+  decideWorkspaceChanges: (agentId: string, runId: string, approve: boolean) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes/${approve ? "approve" : "deny"}`, { method: "POST" }),
 };

@@ -9,9 +9,12 @@ export class WorkspaceManager {
     return path.join(this.root, agentId);
   }
 
+  stagingPath(runId: string): string { return path.join(this.root, ".staging", runId); }
+
   async initialize(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
+    await mkdir(path.join(this.root, ".staging"), { recursive: true });
   }
 
   async create(agent: Agent): Promise<void> {

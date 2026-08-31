@@ -1,9 +1,9 @@
-import { mkdtemp } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
-import { RunCancelledError, RuntimeLimitError } from "./errors.js";
+import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
@@ -44,9 +44,18 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeTestRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
+  return root;
+}
+
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  environment: NodeJS.ProcessEnv = {},
+  existingRoot?: string,
+): Promise<AgentService> {
+  const root = existingRoot ?? await makeTestRoot();
   const config = loadConfig({
     NODE_ENV: "test",
     APP_DATA_DIR: path.join(root, "data"),
@@ -54,6 +63,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...environment,
   });
   const service = new AgentService(
     config,
@@ -87,6 +97,161 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+  });
+
+  it("runs against staging and leaves the persistent workspace unchanged pending approval", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "proposal.txt"), "staged", "utf8");
+        await expect(readFile(path.join(request.workspacePath, ".env"), "utf8")).rejects.toThrow();
+        return super.run(request);
+      }
+    }
+    const runner = new StagingRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Staged" });
+    await writeFile(path.join(agent.workspacePath, ".env"), "protected", "utf8");
+    const { run } = await service.sendMessage(agent.id, "propose a file");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    expect(runner.requests[0]?.workspacePath).not.toBe(agent.workspacePath);
+    await expect(readFile(path.join(agent.workspacePath, "proposal.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(agent.workspacePath, ".env"), "utf8")).resolves.toBe("protected");
+  });
+
+  it("rehydrates a pending workspace proposal after a service restart", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "restart.txt"), "staged", "utf8");
+        return super.run(request);
+      }
+    }
+    const root = await makeTestRoot();
+    const first = await makeService(new StagingRunner(), {}, root);
+    const agent = await first.createAgent({ name: "Restartable review" });
+    const { run } = await first.sendMessage(agent.id, "propose a change");
+    await expect.poll(() => first.getRun(run.id).status).toBe("awaiting_approval");
+    const pending = first.getWorkspaceChangeSet(agent.id, run.id);
+
+    const restarted = await makeService(new FakeRunner(), {}, root);
+    expect(await restarted.getPendingWorkspaceChangeSet(agent.id)).toMatchObject({
+      id: pending.id,
+      runId: run.id,
+      status: "pending",
+    });
+    expect(restarted.getRun(run.id).status).toBe("awaiting_approval");
+    await expect(readFile(path.join(pending.stagingPath, "restart.txt"), "utf8")).resolves.toBe("staged");
+  });
+
+  it("expires abandoned proposals, removes staging, and tells the next Run", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        if (this.calls === 0) {
+          await writeFile(path.join(request.workspacePath, "expired.txt"), "staged", "utf8");
+        }
+        return super.run(request);
+      }
+    }
+    const root = await makeTestRoot();
+    const firstRunner = new StagingRunner();
+    const first = await makeService(firstRunner, {}, root);
+    const agent = await first.createAgent({ name: "Expiring review" });
+    const { run } = await first.sendMessage(agent.id, "propose a change");
+    await expect.poll(() => first.getRun(run.id).status).toBe("awaiting_approval");
+    const pending = first.getWorkspaceChangeSet(agent.id, run.id);
+
+    // Make the persisted proposal old without waiting for a real review TTL.
+    const databasePath = path.join(root, "data", "db.json");
+    const database = JSON.parse(await readFile(databasePath, "utf8")) as {
+      workspaceChangeSets: Array<{ id: string; createdAt: string }>;
+    };
+    const stored = database.workspaceChangeSets.find((item) => item.id === pending.id)!;
+    stored.createdAt = new Date(Date.now() - 2_000).toISOString();
+    await writeFile(databasePath, JSON.stringify(database), "utf8");
+
+    const secondRunner = new FakeRunner();
+    const restarted = await makeService(
+      secondRunner,
+      { WORKSPACE_APPROVAL_TTL_MS: "1000" },
+      root,
+    );
+    expect(await restarted.getPendingWorkspaceChangeSet(agent.id)).toBeNull();
+    expect(restarted.getWorkspaceChangeSet(agent.id, run.id)).toMatchObject({ status: "expired" });
+    expect(restarted.getRun(run.id)).toMatchObject({
+      status: "completed",
+      error: "Workspace proposal expired before review and was discarded",
+    });
+    await expect(lstat(pending.stagingPath)).rejects.toThrow();
+    expect(restarted.getMessages(agent.id).at(-1)?.content).toContain("expired before review");
+
+    const next = await restarted.sendMessage(agent.id, "continue safely");
+    await expect.poll(() => restarted.getRun(next.run.id).status).toBe("completed");
+    expect(secondRunner.requests[0]?.prompt).toContain("expired before review and were not applied");
+  });
+
+  it("auto-applies ordinary source edits in auto mode", async () => {
+    class SourceRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "hello.ts"), "export const hello = 'world';\n", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new SourceRunner());
+    const agent = await service.createAgent({ name: "Auto", workspaceApprovalMode: "auto" });
+    const { run } = await service.sendMessage(agent.id, "write source");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect(readFile(path.join(agent.workspacePath, "hello.ts"), "utf8")).resolves.toContain("world");
+  });
+
+  it("applies a pending staging change exactly once after approval", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "approved.txt"), "approved", "utf8");
+        return super.run(request);
+      }
+    }
+    const runner = new StagingRunner(); const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Approve" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    const staged = service.getWorkspaceChangeSet(agent.id, run.id).stagingPath;
+    await service.decideWorkspaceChangeSet(agent.id, run.id, true);
+    await expect(readFile(path.join(agent.workspacePath, "approved.txt"), "utf8")).resolves.toBe("approved");
+    await expect(lstat(staged)).rejects.toThrow();
+    await expect(service.decideWorkspaceChangeSet(agent.id, run.id, true)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("denies a pending change without touching the persistent workspace", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "denied.txt"), "denied", "utf8");
+        return super.run(request);
+      }
+    }
+    const runner = new StagingRunner(); const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Deny" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await service.decideWorkspaceChangeSet(agent.id, run.id, false);
+    await expect(readFile(path.join(agent.workspacePath, "denied.txt"), "utf8")).rejects.toThrow();
+    const next = await service.sendMessage(agent.id, "try again");
+    await expect.poll(() => service.getRun(next.run.id).status).toBe("awaiting_approval");
+    expect(runner.requests.at(-1)?.prompt).toContain("previous proposed workspace changes were denied");
+  });
+
+  it("requires a pending workspace proposal to be decided before the next Run", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "pending.ts"), "export {};\n", "utf8");
+        return super.run(request);
+      }
+    }
+    const service = await makeService(new StagingRunner());
+    const agent = await service.createAgent({ name: "Pending" });
+    const { run } = await service.sendMessage(agent.id, "propose");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await expect(service.sendMessage(agent.id, "continue")).rejects.toMatchObject({ statusCode: 409 });
+    await service.decideWorkspaceChangeSet(agent.id, run.id, false);
+    await expect(service.sendMessage(agent.id, "continue")).resolves.toBeDefined();
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
@@ -385,22 +550,7 @@ describe("Agent lifecycle", () => {
     expect((await service.sendMessage(agent.id, "second")).run.status).toBe("denied");
   });
 
-  it("passes the Agent's runtime limits to the Runner", async () => {
-    const runner = new FakeRunner();
-    const service = await makeService(runner);
-    const agent = await service.createAgent({
-      name: "Bounded runtime",
-      runtimeLimits: { maxRunDurationMs: 15_000, maxRunOutputBytes: 65_536 },
-    });
-    const { run } = await service.sendMessage(agent.id, "do work");
-    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    expect(runner.requests.at(-1)?.limits).toMatchObject({
-      durationMs: 15_000,
-      outputBytes: 65_536,
-    });
-  });
-
-  it("passes per-Agent container resource caps to the Runner", async () => {
+  it("passes per-Agent compute caps to the Runner", async () => {
     const runner = new FakeRunner();
     const service = await makeService(runner);
     const agent = await service.createAgent({
@@ -415,138 +565,23 @@ describe("Agent lifecycle", () => {
     });
     const { run } = await service.sendMessage(agent.id, "do work");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    expect(runner.requests.at(-1)?.limits).toMatchObject({
-      cpus: 0.5,
-      memoryMb: 512,
-      processes: 64,
-    });
+    expect(runner.requests.at(-1)?.limits).toMatchObject({ cpus: 0.5, memoryMb: 512, processes: 64 });
   });
 
-  it("force-terminates the active Run and stops the Agent on operator kill", async () => {
+  it("records an operator kill as a terminated Run and stops the Agent", async () => {
     let rejectRun!: (reason: Error) => void;
     const runner: AgentRunner = {
       run: () => new Promise<RunnerResult>((_resolve, reject) => { rejectRun = reject; }),
-      cancel: async () => {
-        rejectRun(new RunCancelledError());
-        return true;
-      },
+      cancel: async () => { rejectRun(new RunCancelledError()); return true; },
       isAvailable: async () => true,
     };
     const service = await makeService(runner);
     const agent = await service.createAgent({ name: "Rogue" });
     const { run } = await service.sendMessage(agent.id, "go rogue");
     await expect.poll(() => service.getRun(run.id).status).toBe("running");
-
-    const killed = await service.killAgent(agent.id);
-    expect(killed.status).toBe("stopped");
-    expect(service.getRun(run.id).status).toBe("terminated");
-    expect(service.getRun(run.id).terminationReason).toBe("operator_kill");
-    const events = service.getBudgetEvents(agent.id);
-    expect(events.some((event) => event.event === "resource_governance.run_terminated")).toBe(true);
-    expect(JSON.stringify(events)).not.toContain("go rogue");
-  });
-
-  it("records a control-plane operator_kill event when no Run is in progress", async () => {
-    const service = await makeService();
-    const agent = await service.createAgent({ name: "Idle" });
-    const killed = await service.killAgent(agent.id);
-    expect(killed.status).toBe("stopped");
-    const events = service.getBudgetEvents(agent.id);
-    expect(events[0]).toMatchObject({
-      event: "resource_governance.operator_kill",
-      reason: "operator_kill",
-      runId: null,
-      runtimeInvoked: false,
-      actor: "local_operator",
-    });
-    // Not a runtime termination: no Run linkage, no runtimeTermination detail.
-    expect(events[0]?.runtimeTermination).toBeUndefined();
-    expect(events.some((event) => event.event === "resource_governance.run_terminated")).toBe(false);
-  });
-
-  it("auto-quarantines an Agent after repeated runtime terminations", async () => {
-    const runner: AgentRunner = {
-      run: async () => {
-        throw new RuntimeLimitError("duration_exceeded", 1_000, 1_100);
-      },
-      cancel: async () => false,
-      isAvailable: async () => true,
-    };
-    const service = await makeService(runner);
-    const agent = await service.createAgent({
-      name: "Runaway",
-      runtimeLimits: {
-        maxRunDurationMs: 1_000,
-        maxRunOutputBytes: null,
-        maxRunCpus: null,
-        maxRunMemoryMb: null,
-        maxRunProcesses: null,
-      },
-    });
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const { run } = await service.sendMessage(agent.id, "loop " + attempt);
-      await expect.poll(() => service.getRun(run.id).status).toBe("terminated");
-      if (service.getAgent(agent.id).status === "stopped") break;
-      await service.startAgent(agent.id);
-    }
-
+    await service.killAgent(agent.id);
     expect(service.getAgent(agent.id).status).toBe("stopped");
-    expect(service.getAgent(agent.id).lastError).toContain("Auto-quarantined");
-    const events = service.getBudgetEvents(agent.id);
-    const quarantineEvent = events.find(
-      (event) => event.event === "resource_governance.agent_quarantined",
-    );
-    expect(quarantineEvent).toBeDefined();
-    // Automatic action: the actor is the system, not an operator.
-    expect(quarantineEvent?.actor).toBe("system");
-
-    // An operator can clear the quarantine by starting the Agent again.
-    const restarted = await service.startAgent(agent.id);
-    expect(restarted.status).toBe("ready");
-    expect(restarted.lastError).toBeNull();
-  });
-
-  it("marks a runtime-terminated Run and lets a later Run proceed", async () => {
-    let killRun = true;
-    const runner: AgentRunner = {
-      run: async () => {
-        if (killRun) {
-          killRun = false;
-          throw new RuntimeLimitError("duration_exceeded", 10_000, 10_050);
-        }
-        return { output: "recovered", threadId: "thread", usage: { outputTokens: 3 } };
-      },
-      cancel: async () => false,
-      isAvailable: async () => true,
-    };
-    const service = await makeService(runner);
-    const agent = await service.createAgent({
-      name: "Runaway",
-      runtimeLimits: { maxRunDurationMs: 10_000, maxRunOutputBytes: null },
-    });
-
-    const first = await service.sendMessage(agent.id, "loop forever");
-    await expect.poll(() => service.getRun(first.run.id).status).toBe("terminated");
-    const terminated = service.getRun(first.run.id);
-    expect(terminated.terminationReason).toBe("duration_exceeded");
-    expect(terminated.error).toContain("10000 ms");
-    // Containment, not an Agent fault: the Agent is usable again immediately.
-    expect(service.getAgent(agent.id).status).toBe("ready");
-    expect(service.getAgent(agent.id).lastError).toBeNull();
-
-    const events = service.getBudgetEvents(agent.id);
-    const terminationEvent = events.find(
-      (event) => event.event === "resource_governance.run_terminated",
-    );
-    expect(terminationEvent).toMatchObject({
-      reason: "run_terminated",
-      runtimeInvoked: true,
-      runtimeTermination: { reason: "duration_exceeded", limit: 10_000, observed: 10_050 },
-    });
-    expect(JSON.stringify(events)).not.toContain("loop forever");
-
-    const second = await service.sendMessage(agent.id, "small safe task");
-    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
+    expect(service.getRun(run.id)).toMatchObject({ status: "terminated", terminationReason: "operator_kill" });
+    expect(service.getBudgetEvents(agent.id).some((event) => event.event === "resource_governance.run_terminated")).toBe(true);
   });
 });

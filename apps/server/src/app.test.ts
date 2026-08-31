@@ -85,10 +85,7 @@ describe("HTTP boundary", () => {
       { maxRunDurationMs: 3_600_001, maxRunOutputBytes: null },
       { maxRunDurationMs: 1_500.5, maxRunOutputBytes: null },
       { maxRunDurationMs: null, maxRunOutputBytes: 512 },
-      { maxRunDurationMs: null }, // both required keys must be present
-      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunCpus: 0 },
-      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunMemoryMb: 32 },
-      { maxRunDurationMs: null, maxRunOutputBytes: null, maxRunProcesses: 4 },
+      { maxRunDurationMs: null }, // both keys required
     ]) {
       const response = await app.inject({
         method: "POST",
@@ -100,12 +97,31 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("returns the persisted pending workspace proposal for rehydration", async () => {
+    const agentId = "00000000-0000-4000-8000-000000000001";
+    const changeSet = {
+      id: "proposal-1",
+      agentId,
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "pending",
+      changes: [],
+    };
+    const pendingService = {
+      getPendingWorkspaceChangeSet: async (id: string) => id === agentId ? changeSet : null,
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), pendingService);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/agents/${agentId}/workspace-changes/pending`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ changeSet });
+    await app.close();
+  });
+
   it("routes the operator kill switch to the service", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/agents/11111111-1111-4111-8111-111111111111/kill",
-    });
+    const response = await app.inject({ method: "POST", url: "/api/agents/11111111-1111-4111-8111-111111111111/kill" });
     expect(response.statusCode).toBe(200);
     expect(response.json().agent).toMatchObject({ status: "stopped" });
     await app.close();

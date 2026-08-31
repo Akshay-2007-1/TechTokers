@@ -5,13 +5,13 @@ import {
   admissionDenialMessage,
   maybeQuarantine,
   recordOperatorKill,
-  recordPolicyUpdate,
   recordRuntimeTermination,
+  recordPolicyUpdate,
   recordUsageReconciliation,
   resourceLimits,
   runtimeTerminationMessage,
-  unlimitedBudgetPolicy,
   unlimitedRuntimeLimits,
+  unlimitedBudgetPolicy,
 } from "./budget-service.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
@@ -27,6 +27,9 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { classifyWorkspaceChanges, createStagingWorkspace, detectWorkspaceChanges, discardStagingWorkspace } from "./transactional-workspace.js";
+import { WorkspaceTransactionApplier } from "./workspace-transaction-applier.js";
+import path from "node:path";
 
 const now = () => new Date().toISOString();
 
@@ -45,6 +48,9 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    // Pending proposals are intentionally retained. Only an interrupted apply is
+    // recovered, because it may have touched the persistent workspace.
+    await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).recover();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
@@ -59,7 +65,16 @@ export class AgentService {
           agent.updatedAt = now();
         }
       }
+      for (const changeSet of database.workspaceChangeSets) {
+        if (changeSet.status === "applying") {
+          changeSet.status = "apply_failed";
+          changeSet.decidedAt = now();
+          const run = database.runs.find((item) => item.id === changeSet.runId);
+          if (run) { run.status = "failed"; run.error = "Server restarted while workspace changes were being applied"; run.completedAt = now(); }
+        }
+      }
     });
+    await this.expirePendingWorkspaceChanges();
   }
 
   listAgents(): Agent[] {
@@ -76,6 +91,56 @@ export class AgentService {
     return agent;
   }
 
+  getWorkspaceChangeSet(agentId: string, runId: string) {
+    const changeSet = this.store.snapshot().workspaceChangeSets.find((item) => item.agentId === agentId && item.runId === runId);
+    if (!changeSet) throw new HttpError(404, "Workspace change set not found");
+    return changeSet;
+  }
+
+  async getPendingWorkspaceChangeSet(agentId: string) {
+    await this.expirePendingWorkspaceChanges();
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .workspaceChangeSets.find((item) => item.agentId === agentId && item.status === "pending") ?? null;
+  }
+
+  async decideWorkspaceChangeSet(agentId: string, runId: string, approve: boolean) {
+    const claimed = await this.store.mutate((database) => {
+      const changeSet = database.workspaceChangeSets.find((item) => item.agentId === agentId && item.runId === runId);
+      const run = database.runs.find((item) => item.id === runId && item.agentId === agentId);
+      if (!changeSet || !run) throw new HttpError(404, "Workspace change set not found");
+      if (changeSet.status !== "pending") throw new HttpError(409, "Workspace change set is no longer pending");
+      if (!approve) { changeSet.status = "denied"; changeSet.decidedAt = now(); run.status = "completed"; return { changeSet: structuredClone(changeSet), run: structuredClone(run), apply: false }; }
+      changeSet.status = "applying";
+      return { changeSet: structuredClone(changeSet), run: structuredClone(run), apply: true };
+    });
+    if (!claimed.apply) { await discardStagingWorkspace(claimed.changeSet.stagingPath); return claimed.changeSet; }
+    try {
+      await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).apply(this.getAgent(agentId).workspacePath, claimed.changeSet.stagingPath, claimed.changeSet.changes);
+      const approved = await this.store.mutate((database) => {
+        const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
+        const run = database.runs.find((item) => item.id === runId)!;
+        changeSet.status = "approved"; changeSet.decidedAt = now(); run.status = "completed"; return structuredClone(changeSet);
+      });
+      await discardStagingWorkspace(claimed.changeSet.stagingPath);
+      return approved;
+    } catch (error) {
+      const failed = await this.store.mutate((database) => {
+        const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
+        const run = database.runs.find((item) => item.id === runId)!;
+        changeSet.status = error instanceof Error && error.message.includes("conflict") ? "conflicted" : "apply_failed";
+        changeSet.decidedAt = now();
+        run.status = "failed";
+        run.error = error instanceof Error ? error.message : String(error);
+        run.completedAt = now();
+        return structuredClone(changeSet);
+      });
+      await discardStagingWorkspace(claimed.changeSet.stagingPath);
+      return failed;
+    }
+  }
+
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
@@ -86,6 +151,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
       maxPromptChars: input.maxPromptChars ?? null,
+      workspaceApprovalMode: input.workspaceApprovalMode ?? "review",
       runtimeLimits: input.runtimeLimits ?? unlimitedRuntimeLimits(),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
@@ -113,16 +179,14 @@ export class AgentService {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
       const previousLimits = resourceLimits(agent);
-      const policyChanged =
-        input.budgetPolicy !== undefined ||
-        input.maxPromptChars !== undefined ||
-        input.runtimeLimits !== undefined;
+      const policyChanged = input.budgetPolicy !== undefined || input.maxPromptChars !== undefined || input.runtimeLimits !== undefined;
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
       if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
       if (input.runtimeLimits !== undefined) agent.runtimeLimits = input.runtimeLimits;
+      if (input.workspaceApprovalMode !== undefined) agent.workspaceApprovalMode = input.workspaceApprovalMode;
       if (policyChanged) recordPolicyUpdate(database, agent, previousLimits, now());
       agent.lastError = null;
       agent.updatedAt = now();
@@ -135,12 +199,17 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
+    const pendingStaging = this.store.snapshot().workspaceChangeSets
+      .filter((item) => item.agentId === id)
+      .map((item) => item.stagingPath);
+    await Promise.all(pendingStaging.map((stagingPath) => discardStagingWorkspace(stagingPath)));
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
       database.governanceEvents = database.governanceEvents.filter((item) => item.agentId !== id);
+      database.workspaceChangeSets = database.workspaceChangeSets.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -155,14 +224,6 @@ export class AgentService {
     return this.setStatus(id, "stopped");
   }
 
-  /**
-   * Operator kill switch: force-terminate any Run in progress and stop the
-   * Agent. Unlike stopAgent, an in-flight Run is recorded as `terminated`
-   * (reason `operator_kill`) via `resource_governance.run_terminated`; with no
-   * Run in progress a `resource_governance.operator_kill` control-plane event is
-   * written instead. Either way the Agent stays stopped until an operator
-   * explicitly starts it again.
-   */
   async killAgent(id: string): Promise<Agent> {
     this.getAgent(id);
     const hadActiveRun = this.activeExecutions.has(id);
@@ -173,17 +234,13 @@ export class AgentService {
       this.operatorKillRequests.delete(id);
     }
     return this.store.mutate((database) => {
-      const stored = database.agents.find((item) => item.id === id);
-      if (!stored) {
-        throw new HttpError(404, "Agent not found");
-      }
-      stored.status = "stopped";
-      stored.lastError = null;
-      stored.updatedAt = now();
-      if (!hadActiveRun) {
-        recordOperatorKill(database, stored, now());
-      }
-      return structuredClone(stored);
+      const agent = database.agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      agent.status = "stopped";
+      agent.lastError = null;
+      agent.updatedAt = now();
+      if (!hadActiveRun) recordOperatorKill(database, agent, now());
+      return structuredClone(agent);
     });
   }
 
@@ -228,6 +285,7 @@ export class AgentService {
     agentId: string,
     prompt: string,
   ): Promise<{ run: AgentRun; message: Message }> {
+    await this.expirePendingWorkspaceChanges();
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
         503,
@@ -269,6 +327,9 @@ export class AgentService {
       }
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
+      }
+      if (database.workspaceChangeSets.some((item) => item.agentId === agentId && item.status === "pending")) {
+        throw new HttpError(409, "Review or deny this Agent's pending workspace changes before sending another message");
       }
       const decision = admitRun(
         database,
@@ -325,7 +386,6 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
-      // Active server-wide fallbacks a blank per-Agent runtime limit inherits.
       runtimeDefaults: {
         maxRunDurationMs: this.config.codexTimeoutMs,
         maxRunOutputBytes: this.config.codexMaxOutputBytes,
@@ -339,6 +399,8 @@ export class AgentService {
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+    const stagingPath = this.workspaces.stagingPath(run.id);
+    await createStagingWorkspace(agentAtStart.workspacePath, stagingPath);
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -351,11 +413,22 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      const latestDecision = this.store.snapshot().workspaceChangeSets
+        .filter((item) => item.agentId === agentAtStart.id && item.decidedAt !== null)
+        .sort((left, right) => (right.decidedAt ?? "").localeCompare(left.decidedAt ?? ""))[0];
+      const workspaceNotice = latestDecision?.status === "denied"
+        ? "the previous proposed workspace changes were denied and were not applied"
+        : latestDecision?.status === "expired"
+          ? "the previous proposed workspace changes expired before review and were not applied"
+          : null;
+      const runtimePrompt = workspaceNotice
+        ? run.prompt + "\n\n[Platform notice: " + workspaceNotice + ". Do not assume files from that proposal exist; inspect the current workspace before relying on them.]"
+        : run.prompt;
       const runtimeLimits = agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits();
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        workspacePath: stagingPath,
+        prompt: runtimePrompt,
         threadId: agentAtStart.codexThreadId,
         limits: {
           durationMs: runtimeLimits.maxRunDurationMs ?? this.config.codexTimeoutMs,
@@ -365,15 +438,18 @@ export class AgentService {
           processes: runtimeLimits.maxRunProcesses ?? this.config.containerPidsLimit,
         },
       });
+      const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);
       const completedAt = now();
+      const disposition = agentAtStart.workspaceApprovalMode === "auto" ? classifyWorkspaceChanges(changes) : "needs_approval";
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
-        storedRun.status = "completed";
+        storedRun.status = changes.length && disposition === "needs_approval" ? "awaiting_approval" : changes.length && disposition === "auto_apply" ? "running" : disposition === "deny" ? "denied" : "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
+        if (changes.length && disposition !== "auto_apply") database.workspaceChangeSets.push({ id: randomUUID(), agentId: agent.id, runId: run.id, stagingPath, status: disposition === "deny" ? "denied" : "pending", changes, createdAt: completedAt, decidedAt: disposition === "deny" ? completedAt : null });
         if (result.usage) recordUsageReconciliation(database, agent, storedRun, completedAt);
         database.messages.push({
           id: randomUUID(),
@@ -388,26 +464,19 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      if (changes.length && disposition === "auto_apply") { await new WorkspaceTransactionApplier(path.join(this.config.workspaceRoot, ".transactions")).apply(agentAtStart.workspacePath, stagingPath, changes); await this.store.mutate((database) => { const stored = database.runs.find((item) => item.id === run.id); if (stored) { stored.status = "completed"; stored.completedAt = now(); } }); await discardStagingWorkspace(stagingPath); }
+      else if (!changes.length || disposition === "deny") await discardStagingWorkspace(stagingPath);
     } catch (error) {
       const completedAt = now();
-      const operatorKill =
-        error instanceof RunCancelledError &&
-        this.operatorKillRequests.has(agentAtStart.id);
+      const operatorKill = error instanceof RunCancelledError && this.operatorKillRequests.has(agentAtStart.id);
       const cancelled = error instanceof RunCancelledError && !operatorKill;
       const runtimeLimit = error instanceof RuntimeLimitError;
       const terminated = runtimeLimit || operatorKill;
       const contained = cancelled || terminated;
       const termination: RuntimeTerminationDetail | null = runtimeLimit
         ? { reason: error.reason, limit: error.limit, observed: error.observed }
-        : operatorKill
-          ? { reason: "operator_kill", limit: 0, observed: 0 }
-          : null;
-      const message =
-        termination !== null
-          ? runtimeTerminationMessage(termination)
-          : error instanceof Error
-            ? error.message
-            : String(error);
+        : operatorKill ? { reason: "operator_kill", limit: 0, observed: 0 } : null;
+      const message = termination ? runtimeTerminationMessage(termination) : error instanceof Error ? error.message : String(error);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -415,7 +484,7 @@ export class AgentService {
           storedRun.status = cancelled ? "cancelled" : terminated ? "terminated" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
-          if (termination !== null) storedRun.terminationReason = termination.reason;
+          if (termination) storedRun.terminationReason = termination.reason;
         }
         if (agent) {
           if (agent.status !== "stopped") {
@@ -424,22 +493,62 @@ export class AgentService {
           agent.lastError = contained ? null : message;
           agent.updatedAt = completedAt;
         }
-        if (termination !== null && storedRun && agent) {
+        if (termination && storedRun && agent) {
           recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
           if (termination.reason !== "operator_kill") {
-            maybeQuarantine(
-              database,
-              agent,
-              {
-                threshold: this.config.runtimeQuarantineThreshold,
-                windowMs: this.config.runtimeQuarantineWindowMs,
-              },
-              completedAt,
-            );
+            maybeQuarantine(database, agent, {
+              threshold: this.config.runtimeQuarantineThreshold,
+              windowMs: this.config.runtimeQuarantineWindowMs,
+            }, completedAt);
           }
         }
       });
+      await discardStagingWorkspace(stagingPath);
     }
+  }
+
+  /**
+   * Terminally expires old review proposals before they can block a later Run.
+   * The database decision is committed before staging removal, so an interrupted
+   * cleanup is safe to retry on the next reconciliation.
+   */
+  private async expirePendingWorkspaceChanges(): Promise<void> {
+    const cutoff = Date.now() - this.config.workspaceApprovalTtlMs;
+    const timestamp = now();
+    const expiredStagingPaths = await this.store.mutate((database) => {
+      const paths: string[] = [];
+      for (const changeSet of database.workspaceChangeSets) {
+        const createdAt = Date.parse(changeSet.createdAt);
+        if (
+          changeSet.status !== "pending" ||
+          !Number.isFinite(createdAt) ||
+          createdAt > cutoff
+        ) {
+          continue;
+        }
+        changeSet.status = "expired";
+        changeSet.decidedAt = timestamp;
+        paths.push(changeSet.stagingPath);
+        const run = database.runs.find(
+          (item) => item.id === changeSet.runId && item.agentId === changeSet.agentId,
+        );
+        if (run && run.status === "awaiting_approval") {
+          run.status = "completed";
+          run.error = "Workspace proposal expired before review and was discarded";
+          run.completedAt = timestamp;
+        }
+        database.messages.push({
+          id: randomUUID(),
+          agentId: changeSet.agentId,
+          runId: changeSet.runId,
+          role: "assistant",
+          content: "[Platform notice: the proposed workspace changes expired before review and were discarded. They were not applied to the persistent workspace.]",
+          createdAt: timestamp,
+        });
+      }
+      return paths;
+    });
+    await Promise.all(expiredStagingPaths.map((stagingPath) => discardStagingWorkspace(stagingPath)));
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

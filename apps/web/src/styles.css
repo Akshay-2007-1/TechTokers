@@ -842,6 +842,25 @@ textarea:focus {
   font-size: 11px;
 }
 
+.workspace-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px solid #ded6ad;
+  border-left: 3px solid #b98919;
+  border-radius: 10px;
+  background: #fffbed;
+  color: #574a25;
+  font-size: 12px;
+}
+
+.workspace-approval .eyebrow { color: #997719; }
+.workspace-change-list { color: #6f6240; word-break: break-word; }
+.workspace-approval-actions { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 3px; }
+.workspace-approval-actions .button { min-width: 132px; }
+
 .composer {
   margin: 0;
   border-top: 1px solid #e1dfd8;
@@ -866,6 +885,29 @@ textarea:focus {
   justify-content: space-between;
   align-items: center;
 }
+
+.workspace-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  color: #77766f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.workspace-mode select {
+  appearance: none;
+  border: 1px solid #d8d5cd;
+  border-radius: 999px;
+  background: #fff;
+  color: #494742;
+  padding: 5px 25px 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workspace-mode select:focus { outline: 2px solid rgba(105, 84, 217, 0.3); outline-offset: 2px; }
 
 .composer-footer > span {
   color: #999992;

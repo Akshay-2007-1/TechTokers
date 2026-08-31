@@ -28,6 +28,8 @@ Volcengine ECS.
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
+- Transactional workspace proposals: source changes can auto-apply in Auto
+  mode, while Review mode keeps every diff staged for an explicit decision
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
 
@@ -206,6 +208,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `WORKSPACE_APPROVAL_TTL_MS` | `86400000` | How long a pending workspace proposal remains reviewable before it is discarded. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.

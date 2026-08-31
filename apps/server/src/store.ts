@@ -9,6 +9,7 @@ const emptyDatabase = (): Database => ({
   messages: [],
   runs: [],
   governanceEvents: [],
+  workspaceChangeSets: [],
 });
 
 export class JsonStore {
@@ -33,6 +34,7 @@ export class JsonStore {
           ...agent,
           budgetPolicy: agent.budgetPolicy ?? { maxRuns: null, maxTotalTokens: null },
           maxPromptChars: agent.maxPromptChars ?? null,
+          workspaceApprovalMode: agent.workspaceApprovalMode ?? "review",
           runtimeLimits: {
             maxRunDurationMs: agent.runtimeLimits?.maxRunDurationMs ?? null,
             maxRunOutputBytes: agent.runtimeLimits?.maxRunOutputBytes ?? null,
@@ -51,6 +53,7 @@ export class JsonStore {
         governanceEvents: Array.isArray(parsed.governanceEvents)
           ? parsed.governanceEvents
           : legacyGovernanceEvents(parsed),
+        workspaceChangeSets: Array.isArray(parsed.workspaceChangeSets) ? parsed.workspaceChangeSets : [],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
