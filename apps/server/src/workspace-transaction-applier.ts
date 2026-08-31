@@ -20,7 +20,8 @@ export class WorkspaceTransactionApplier {
   }
 
   async apply(persistent: string, staging: string, changes: WorkspaceChange[]): Promise<void> {
-    await this.recover();
+    // Recovery is startup-only. Calling it here would let an unrelated live
+    // transaction roll back another Agent's in-progress journal.
     const id = randomUUID(); const root = path.join(this.transactionRoot, id); const backup = path.join(root, "backup");
     await mkdir(backup, { recursive: true });
     const existing = new Map<string, string | null>(); const originals: Original[] = []; const paths = new Set<string>();

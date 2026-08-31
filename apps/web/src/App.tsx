@@ -265,7 +265,12 @@ export default function App() {
   const decideChanges = async (approve: boolean) => {
     if (!selected || !activeRun) return;
     const result = await api.decideWorkspaceChanges(selected.id, activeRun.id, approve);
-    setChangeSet(result.changeSet); setActiveRun({ ...activeRun, status: "completed" });
+    setChangeSet(result.changeSet);
+    if (result.changeSet.status === "approved" || result.changeSet.status === "denied") {
+      setActiveRun({ ...activeRun, status: "completed" });
+    } else {
+      setActiveRun({ ...activeRun, status: "failed", error: "Workspace changes were not applied: " + result.changeSet.status });
+    }
   };
 
   const createAgent = async (event: React.FormEvent) => {

@@ -18,6 +18,8 @@ export function classifyWorkspaceChanges(changes: WorkspaceChange[]): WorkspaceC
 
 const protectedPath = (relativePath: string) =>
   relativePath === ".env" || relativePath.startsWith(".env.");
+const ignoredDirectory = (relativePath: string) =>
+  relativePath === ".git" || relativePath === "node_modules" || relativePath === "dist" || relativePath === "build";
 
 export function safeRelativePath(relativePath: string): string {
   if (!relativePath || relativePath.includes("\0") || path.isAbsolute(relativePath)) {
@@ -36,7 +38,7 @@ async function manifest(root: string): Promise<Map<string, string>> {
   async function visit(directory: string, prefix = ""): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const relative = prefix ? prefix + "/" + entry.name : entry.name;
-      if (protectedPath(relative)) continue;
+      if (protectedPath(relative) || ignoredDirectory(relative)) continue;
       const full = path.join(directory, entry.name);
       const stat = await lstat(full);
       if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
@@ -60,7 +62,7 @@ export async function createStagingWorkspace(
     recursive: true,
     filter: (source) => {
       const relative = path.relative(persistentWorkspace, source).replaceAll("\\", "/");
-      return !protectedPath(relative);
+      return !protectedPath(relative) && !ignoredDirectory(relative);
     },
   });
 }

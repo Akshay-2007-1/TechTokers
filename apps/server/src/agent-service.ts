@@ -3,14 +3,17 @@ import {
   admitRun,
   budgetStatus,
   admissionDenialMessage,
+  recordRuntimeTermination,
   recordPolicyUpdate,
   recordUsageReconciliation,
   resourceLimits,
+  runtimeTerminationMessage,
+  unlimitedRuntimeLimits,
   unlimitedBudgetPolicy,
 } from "./budget-service.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, RunCancelledError, RuntimeLimitError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -110,11 +113,18 @@ export class AgentService {
       await discardStagingWorkspace(claimed.changeSet.stagingPath);
       return approved;
     } catch (error) {
-      return await this.store.mutate((database) => {
+      const failed = await this.store.mutate((database) => {
         const changeSet = database.workspaceChangeSets.find((item) => item.id === claimed.changeSet.id)!;
+        const run = database.runs.find((item) => item.id === runId)!;
         changeSet.status = error instanceof Error && error.message.includes("conflict") ? "conflicted" : "apply_failed";
-        changeSet.decidedAt = now(); return structuredClone(changeSet);
+        changeSet.decidedAt = now();
+        run.status = "failed";
+        run.error = error instanceof Error ? error.message : String(error);
+        run.completedAt = now();
+        return structuredClone(changeSet);
       });
+      await discardStagingWorkspace(claimed.changeSet.stagingPath);
+      return failed;
     }
   }
 
@@ -175,12 +185,17 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
+    const pendingStaging = this.store.snapshot().workspaceChangeSets
+      .filter((item) => item.agentId === id)
+      .map((item) => item.stagingPath);
+    await Promise.all(pendingStaging.map((stagingPath) => discardStagingWorkspace(stagingPath)));
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
       database.governanceEvents = database.governanceEvents.filter((item) => item.agentId !== id);
+      database.workspaceChangeSets = database.workspaceChangeSets.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -365,6 +380,10 @@ export class AgentService {
         workspacePath: stagingPath,
         prompt: runtimePrompt,
         threadId: agentAtStart.codexThreadId,
+        limits: {
+          durationMs: (agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits()).maxRunDurationMs ?? this.config.codexTimeoutMs,
+          outputBytes: (agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits()).maxRunOutputBytes ?? this.config.codexMaxOutputBytes,
+        },
       });
       const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);
       const completedAt = now();
@@ -397,23 +416,28 @@ export class AgentService {
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
-      const message = error instanceof Error ? error.message : String(error);
+      const terminated = error instanceof RuntimeLimitError;
+      const termination = terminated ? { reason: error.reason, limit: error.limit, observed: error.observed } : null;
+      const message = termination ? runtimeTerminationMessage(termination) : error instanceof Error ? error.message : String(error);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
-          storedRun.status = cancelled ? "cancelled" : "failed";
+          storedRun.status = cancelled ? "cancelled" : terminated ? "terminated" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
+          if (termination) storedRun.terminationReason = termination.reason;
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status = cancelled || terminated ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled || terminated ? null : message;
           agent.updatedAt = completedAt;
         }
+        if (termination && storedRun && agent) recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
       });
+      await discardStagingWorkspace(stagingPath);
     }
   }
 
