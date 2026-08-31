@@ -154,15 +154,26 @@ function BudgetFields({
 }
 
 function RuntimeLimitFields({ form, setForm, defaults }: { form: typeof emptyForm; setForm: (next: typeof emptyForm) => void; defaults?: SystemInfo["runtimeDefaults"] }) {
-  const placeholder = (value: number | undefined, scale = 1) => value === undefined ? "server default" : String(Math.round(value / scale));
-  return <div className="form-grid budget-fields">
-    <p className="field-hint" style={{ gridColumn: "1 / -1", margin: 0 }}>Blank inherits the server default shown in grey; it is not unlimited.</p>
-    <label>Max Run duration, seconds (optional)<input type="number" min="1" max="3600" placeholder={placeholder(defaults?.maxRunDurationMs, 1000)} value={form.maxRunSeconds} onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })} /></label>
-    <label>Max Run output, KB (optional)<input type="number" min="1" max="65536" placeholder={placeholder(defaults?.maxRunOutputBytes, 1024)} value={form.maxRunOutputKb} onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })} /></label>
-    <label>Max Run CPUs (container only)<input type="number" min="0.1" max="64" step="0.1" placeholder={placeholder(defaults?.maxRunCpus)} value={form.maxRunCpus} onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })} /></label>
-    <label>Max Run memory, MB (container only)<input type="number" min="64" max="131072" placeholder={placeholder(defaults?.maxRunMemoryMb)} value={form.maxRunMemoryMb} onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })} /></label>
-    <label>Max Run processes (container only)<input type="number" min="16" max="16384" placeholder={placeholder(defaults?.maxRunProcesses)} value={form.maxRunProcesses} onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })} /></label>
-  </div>;
+  const placeholder = (value: number | undefined, scale = 1) =>
+    value === undefined ? "Server default" : String(Math.round(value / scale));
+  return (
+    <section className="runtime-limits" aria-label="Runtime limits">
+      <div className="runtime-limits-heading">
+        <div>
+          <span className="eyebrow">Runtime guardrails</span>
+          <strong>Per-Run limits</strong>
+        </div>
+        <span>Blank inherits the server default</span>
+      </div>
+      <div className="runtime-limit-grid">
+        <label>Duration <small>seconds</small><input type="number" min="1" max="3600" placeholder={placeholder(defaults?.maxRunDurationMs, 1000)} value={form.maxRunSeconds} onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })} /></label>
+        <label>Output <small>KB</small><input type="number" min="1" max="65536" placeholder={placeholder(defaults?.maxRunOutputBytes, 1024)} value={form.maxRunOutputKb} onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })} /></label>
+        <label>CPUs <small>container only</small><input type="number" min="0.1" max="64" step="0.1" placeholder={placeholder(defaults?.maxRunCpus)} value={form.maxRunCpus} onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })} /></label>
+        <label>Memory <small>MB · container only</small><input type="number" min="64" max="131072" placeholder={placeholder(defaults?.maxRunMemoryMb)} value={form.maxRunMemoryMb} onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })} /></label>
+        <label>Processes <small>container only</small><input type="number" min="16" max="16384" placeholder={placeholder(defaults?.maxRunProcesses)} value={form.maxRunProcesses} onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })} /></label>
+      </div>
+    </section>
+  );
 }
 
 export default function App() {
@@ -827,12 +838,13 @@ export default function App() {
                   rows={3}
                 />
                 <div className="composer-footer">
-                  <label className="workspace-mode" title="Controls how workspace changes are handled">
-                    <span>Changes</span>
-                    <select value={selected.workspaceApprovalMode} onChange={(event) => void setWorkspaceMode(event.target.value as "auto" | "review")} disabled={selected.status === "busy"}>
+                  <label className={"workspace-mode mode-" + selected.workspaceApprovalMode} title="Controls how workspace changes are handled">
+                    <span className="workspace-mode-label">Workspace changes</span>
+                    <select aria-label="Workspace change mode" value={selected.workspaceApprovalMode} onChange={(event) => void setWorkspaceMode(event.target.value as "auto" | "review")} disabled={selected.status === "busy"}>
                       <option value="review">Review</option>
                       <option value="auto">Auto</option>
                     </select>
+                    <small>{selected.workspaceApprovalMode === "review" ? "Ask before every diff" : "Apply ordinary code"}</small>
                   </label>
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"} · {promptLimit === null
