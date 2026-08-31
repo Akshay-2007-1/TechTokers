@@ -95,4 +95,26 @@ describe("HTTP boundary", () => {
     }
     await app.close();
   });
+
+  it("returns the persisted pending workspace proposal for rehydration", async () => {
+    const agentId = "00000000-0000-4000-8000-000000000001";
+    const changeSet = {
+      id: "proposal-1",
+      agentId,
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "pending",
+      changes: [],
+    };
+    const pendingService = {
+      getPendingWorkspaceChangeSet: async (id: string) => id === agentId ? changeSet : null,
+    } as unknown as AgentService;
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), pendingService);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/agents/${agentId}/workspace-changes/pending`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ changeSet });
+    await app.close();
+  });
 });

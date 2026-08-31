@@ -90,6 +90,8 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  pendingWorkspaceChanges: (agentId: string) =>
+    request<{ changeSet: WorkspaceChangeSet | null }>(`/api/agents/${agentId}/workspace-changes/pending`),
   workspaceChanges: (agentId: string, runId: string) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes`),
   decideWorkspaceChanges: (agentId: string, runId: string, approve: boolean) => request<{ changeSet: WorkspaceChangeSet }>(`/api/agents/${agentId}/runs/${runId}/workspace-changes/${approve ? "approve" : "deny"}`, { method: "POST" }),
 };

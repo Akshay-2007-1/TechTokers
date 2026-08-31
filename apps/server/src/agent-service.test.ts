@@ -44,9 +44,18 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeTestRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
+  return root;
+}
+
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  environment: NodeJS.ProcessEnv = {},
+  existingRoot?: string,
+): Promise<AgentService> {
+  const root = existingRoot ?? await makeTestRoot();
   const config = loadConfig({
     NODE_ENV: "test",
     APP_DATA_DIR: path.join(root, "data"),
@@ -54,6 +63,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...environment,
   });
   const service = new AgentService(
     config,
@@ -106,6 +116,76 @@ describe("Agent lifecycle", () => {
     expect(runner.requests[0]?.workspacePath).not.toBe(agent.workspacePath);
     await expect(readFile(path.join(agent.workspacePath, "proposal.txt"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(agent.workspacePath, ".env"), "utf8")).resolves.toBe("protected");
+  });
+
+  it("rehydrates a pending workspace proposal after a service restart", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "restart.txt"), "staged", "utf8");
+        return super.run(request);
+      }
+    }
+    const root = await makeTestRoot();
+    const first = await makeService(new StagingRunner(), {}, root);
+    const agent = await first.createAgent({ name: "Restartable review" });
+    const { run } = await first.sendMessage(agent.id, "propose a change");
+    await expect.poll(() => first.getRun(run.id).status).toBe("awaiting_approval");
+    const pending = first.getWorkspaceChangeSet(agent.id, run.id);
+
+    const restarted = await makeService(new FakeRunner(), {}, root);
+    expect(await restarted.getPendingWorkspaceChangeSet(agent.id)).toMatchObject({
+      id: pending.id,
+      runId: run.id,
+      status: "pending",
+    });
+    expect(restarted.getRun(run.id).status).toBe("awaiting_approval");
+    await expect(readFile(path.join(pending.stagingPath, "restart.txt"), "utf8")).resolves.toBe("staged");
+  });
+
+  it("expires abandoned proposals, removes staging, and tells the next Run", async () => {
+    class StagingRunner extends FakeRunner {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        if (this.calls === 0) {
+          await writeFile(path.join(request.workspacePath, "expired.txt"), "staged", "utf8");
+        }
+        return super.run(request);
+      }
+    }
+    const root = await makeTestRoot();
+    const firstRunner = new StagingRunner();
+    const first = await makeService(firstRunner, {}, root);
+    const agent = await first.createAgent({ name: "Expiring review" });
+    const { run } = await first.sendMessage(agent.id, "propose a change");
+    await expect.poll(() => first.getRun(run.id).status).toBe("awaiting_approval");
+    const pending = first.getWorkspaceChangeSet(agent.id, run.id);
+
+    // Make the persisted proposal old without waiting for a real review TTL.
+    const databasePath = path.join(root, "data", "db.json");
+    const database = JSON.parse(await readFile(databasePath, "utf8")) as {
+      workspaceChangeSets: Array<{ id: string; createdAt: string }>;
+    };
+    const stored = database.workspaceChangeSets.find((item) => item.id === pending.id)!;
+    stored.createdAt = new Date(Date.now() - 2_000).toISOString();
+    await writeFile(databasePath, JSON.stringify(database), "utf8");
+
+    const secondRunner = new FakeRunner();
+    const restarted = await makeService(
+      secondRunner,
+      { WORKSPACE_APPROVAL_TTL_MS: "1000" },
+      root,
+    );
+    expect(await restarted.getPendingWorkspaceChangeSet(agent.id)).toBeNull();
+    expect(restarted.getWorkspaceChangeSet(agent.id, run.id)).toMatchObject({ status: "expired" });
+    expect(restarted.getRun(run.id)).toMatchObject({
+      status: "completed",
+      error: "Workspace proposal expired before review and was discarded",
+    });
+    await expect(lstat(pending.stagingPath)).rejects.toThrow();
+    expect(restarted.getMessages(agent.id).at(-1)?.content).toContain("expired before review");
+
+    const next = await restarted.sendMessage(agent.id, "continue safely");
+    await expect.poll(() => restarted.getRun(next.run.id).status).toBe("completed");
+    expect(secondRunner.requests[0]?.prompt).toContain("expired before review and were not applied");
   });
 
   it("auto-applies ordinary source edits in auto mode", async () => {

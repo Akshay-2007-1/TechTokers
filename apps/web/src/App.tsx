@@ -219,13 +219,24 @@ export default function App() {
       setGovernanceEvents([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId), refreshBudget(selectedId)])
-      .then(([, result]) => {
+    void Promise.all([
+      refreshMessages(selectedId),
+      api.runs(selectedId),
+      refreshBudget(selectedId),
+      api.pendingWorkspaceChanges(selectedId),
+    ])
+      .then(([, result, , pending]) => {
         if (selectedIdRef.current !== selectedId) return;
-        const latest = result.runs[0] ?? null;
-        setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
-          void pollRun(latest.id, selectedId).catch((reason) =>
+        // A pending proposal is authoritative. It must win over simple run
+        // ordering after a browser/server restart so the approval panel returns.
+        const pendingRun = pending.changeSet
+          ? result.runs.find((run) => run.id === pending.changeSet?.runId) ?? null
+          : null;
+        const active = pendingRun ?? result.runs[0] ?? null;
+        setChangeSet(pending.changeSet);
+        setActiveRun(active);
+        if (active && ["queued", "running"].includes(active.status)) {
+          void pollRun(active.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           );
         }

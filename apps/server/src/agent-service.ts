@@ -70,6 +70,7 @@ export class AgentService {
         }
       }
     });
+    await this.expirePendingWorkspaceChanges();
   }
 
   listAgents(): Agent[] {
@@ -90,6 +91,14 @@ export class AgentService {
     const changeSet = this.store.snapshot().workspaceChangeSets.find((item) => item.agentId === agentId && item.runId === runId);
     if (!changeSet) throw new HttpError(404, "Workspace change set not found");
     return changeSet;
+  }
+
+  async getPendingWorkspaceChangeSet(agentId: string) {
+    await this.expirePendingWorkspaceChanges();
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .workspaceChangeSets.find((item) => item.agentId === agentId && item.status === "pending") ?? null;
   }
 
   async decideWorkspaceChangeSet(agentId: string, runId: string, approve: boolean) {
@@ -251,6 +260,7 @@ export class AgentService {
     agentId: string,
     prompt: string,
   ): Promise<{ run: AgentRun; message: Message }> {
+    await this.expirePendingWorkspaceChanges();
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
         503,
@@ -372,8 +382,13 @@ export class AgentService {
       const latestDecision = this.store.snapshot().workspaceChangeSets
         .filter((item) => item.agentId === agentAtStart.id && item.decidedAt !== null)
         .sort((left, right) => (right.decidedAt ?? "").localeCompare(left.decidedAt ?? ""))[0];
-      const runtimePrompt = latestDecision?.status === "denied"
-        ? run.prompt + "\n\n[Platform notice: the previous proposed workspace changes were denied and were not applied. Do not assume files from that proposal exist; inspect the current workspace before relying on them.]"
+      const workspaceNotice = latestDecision?.status === "denied"
+        ? "the previous proposed workspace changes were denied and were not applied"
+        : latestDecision?.status === "expired"
+          ? "the previous proposed workspace changes expired before review and were not applied"
+          : null;
+      const runtimePrompt = workspaceNotice
+        ? run.prompt + "\n\n[Platform notice: " + workspaceNotice + ". Do not assume files from that proposal exist; inspect the current workspace before relying on them.]"
         : run.prompt;
       const result = await this.runner.run({
         agentId: agentAtStart.id,
@@ -439,6 +454,50 @@ export class AgentService {
       });
       await discardStagingWorkspace(stagingPath);
     }
+  }
+
+  /**
+   * Terminally expires old review proposals before they can block a later Run.
+   * The database decision is committed before staging removal, so an interrupted
+   * cleanup is safe to retry on the next reconciliation.
+   */
+  private async expirePendingWorkspaceChanges(): Promise<void> {
+    const cutoff = Date.now() - this.config.workspaceApprovalTtlMs;
+    const timestamp = now();
+    const expiredStagingPaths = await this.store.mutate((database) => {
+      const paths: string[] = [];
+      for (const changeSet of database.workspaceChangeSets) {
+        const createdAt = Date.parse(changeSet.createdAt);
+        if (
+          changeSet.status !== "pending" ||
+          !Number.isFinite(createdAt) ||
+          createdAt > cutoff
+        ) {
+          continue;
+        }
+        changeSet.status = "expired";
+        changeSet.decidedAt = timestamp;
+        paths.push(changeSet.stagingPath);
+        const run = database.runs.find(
+          (item) => item.id === changeSet.runId && item.agentId === changeSet.agentId,
+        );
+        if (run && run.status === "awaiting_approval") {
+          run.status = "completed";
+          run.error = "Workspace proposal expired before review and was discarded";
+          run.completedAt = timestamp;
+        }
+        database.messages.push({
+          id: randomUUID(),
+          agentId: changeSet.agentId,
+          runId: changeSet.runId,
+          role: "assistant",
+          content: "[Platform notice: the proposed workspace changes expired before review and were discarded. They were not applied to the persistent workspace.]",
+          createdAt: timestamp,
+        });
+      }
+      return paths;
+    });
+    await Promise.all(expiredStagingPaths.map((stagingPath) => discardStagingWorkspace(stagingPath)));
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

@@ -133,6 +133,11 @@ export async function createApp(
     return { budget: service.getBudget(id), events: service.getBudgetEvents(id) };
   });
 
+  app.get("/api/agents/:id/workspace-changes/pending", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { changeSet: await service.getPendingWorkspaceChangeSet(id) };
+  });
+
   app.get("/api/agents/:agentId/runs/:runId/workspace-changes", async (request) => {
     const { agentId, runId } = z.object({ agentId: z.string().uuid(), runId: z.string().uuid() }).parse(request.params);
     return { changeSet: service.getWorkspaceChangeSet(agentId, runId) };
