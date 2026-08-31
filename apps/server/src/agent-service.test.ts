@@ -549,4 +549,39 @@ describe("Agent lifecycle", () => {
     await service.startAgent(agent.id);
     expect((await service.sendMessage(agent.id, "second")).run.status).toBe("denied");
   });
+
+  it("passes per-Agent compute caps to the Runner", async () => {
+    const runner = new FakeRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({
+      name: "Capped compute",
+      runtimeLimits: {
+        maxRunDurationMs: null,
+        maxRunOutputBytes: null,
+        maxRunCpus: 0.5,
+        maxRunMemoryMb: 512,
+        maxRunProcesses: 64,
+      },
+    });
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(runner.requests.at(-1)?.limits).toMatchObject({ cpus: 0.5, memoryMb: 512, processes: 64 });
+  });
+
+  it("records an operator kill as a terminated Run and stops the Agent", async () => {
+    let rejectRun!: (reason: Error) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise<RunnerResult>((_resolve, reject) => { rejectRun = reject; }),
+      cancel: async () => { rejectRun(new RunCancelledError()); return true; },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Rogue" });
+    const { run } = await service.sendMessage(agent.id, "go rogue");
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+    await service.killAgent(agent.id);
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(service.getRun(run.id)).toMatchObject({ status: "terminated", terminationReason: "operator_kill" });
+    expect(service.getBudgetEvents(agent.id).some((event) => event.event === "resource_governance.run_terminated")).toBe(true);
+  });
 });

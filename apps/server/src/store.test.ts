@@ -83,6 +83,9 @@ describe("JsonStore", () => {
     expect(data.agents[0]?.runtimeLimits).toEqual({
       maxRunDurationMs: null,
       maxRunOutputBytes: null,
+      maxRunCpus: null,
+      maxRunMemoryMb: null,
+      maxRunProcesses: null,
     });
     expect(data.runs.find((run) => run.id === "r-started")).toMatchObject({
       budgetReserved: true,

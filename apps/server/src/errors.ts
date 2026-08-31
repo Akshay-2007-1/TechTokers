@@ -15,7 +15,10 @@ export class RunCancelledError extends Error {
   }
 }
 
-export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded";
+export type RuntimeTerminationReason =
+  | "duration_exceeded"
+  | "output_exceeded"
+  | "operator_kill";
 
 /**
  * Thrown by an AgentRunner when a per-Run resource limit forces it to kill the

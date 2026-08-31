@@ -3,6 +3,8 @@ import {
   admitRun,
   budgetStatus,
   admissionDenialMessage,
+  maybeQuarantine,
+  recordOperatorKill,
   recordRuntimeTermination,
   recordPolicyUpdate,
   recordUsageReconciliation,
@@ -21,6 +23,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RuntimeTerminationDetail,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -33,6 +36,7 @@ const now = () => new Date().toISOString();
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly operatorKillRequests = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -148,7 +152,7 @@ export class AgentService {
       budgetPolicy: input.budgetPolicy ?? unlimitedBudgetPolicy(),
       maxPromptChars: input.maxPromptChars ?? null,
       workspaceApprovalMode: input.workspaceApprovalMode ?? "review",
-      runtimeLimits: input.runtimeLimits ?? { maxRunDurationMs: null, maxRunOutputBytes: null },
+      runtimeLimits: input.runtimeLimits ?? unlimitedRuntimeLimits(),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -175,12 +179,13 @@ export class AgentService {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
       const previousLimits = resourceLimits(agent);
-      const policyChanged = input.budgetPolicy !== undefined || input.maxPromptChars !== undefined;
+      const policyChanged = input.budgetPolicy !== undefined || input.maxPromptChars !== undefined || input.runtimeLimits !== undefined;
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
       if (input.budgetPolicy !== undefined) agent.budgetPolicy = input.budgetPolicy;
       if (input.maxPromptChars !== undefined) agent.maxPromptChars = input.maxPromptChars;
+      if (input.runtimeLimits !== undefined) agent.runtimeLimits = input.runtimeLimits;
       if (input.workspaceApprovalMode !== undefined) agent.workspaceApprovalMode = input.workspaceApprovalMode;
       if (policyChanged) recordPolicyUpdate(database, agent, previousLimits, now());
       agent.lastError = null;
@@ -217,6 +222,26 @@ export class AgentService {
     this.getAgent(id);
     await this.cancelExecution(id);
     return this.setStatus(id, "stopped");
+  }
+
+  async killAgent(id: string): Promise<Agent> {
+    this.getAgent(id);
+    const hadActiveRun = this.activeExecutions.has(id);
+    this.operatorKillRequests.add(id);
+    try {
+      await this.cancelExecution(id);
+    } finally {
+      this.operatorKillRequests.delete(id);
+    }
+    return this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === id);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      agent.status = "stopped";
+      agent.lastError = null;
+      agent.updatedAt = now();
+      if (!hadActiveRun) recordOperatorKill(database, agent, now());
+      return structuredClone(agent);
+    });
   }
 
   getMessages(agentId: string): Message[] {
@@ -361,6 +386,15 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
+      runtimeDefaults: {
+        maxRunDurationMs: this.config.codexTimeoutMs,
+        maxRunOutputBytes: this.config.codexMaxOutputBytes,
+        maxRunCpus: this.config.containerCpuLimit,
+        maxRunMemoryMb: this.config.containerMemoryMb,
+        maxRunProcesses: this.config.containerPidsLimit,
+        quarantineThreshold: this.config.runtimeQuarantineThreshold,
+        quarantineWindowMs: this.config.runtimeQuarantineWindowMs,
+      },
     };
   }
 
@@ -390,14 +424,18 @@ export class AgentService {
       const runtimePrompt = workspaceNotice
         ? run.prompt + "\n\n[Platform notice: " + workspaceNotice + ". Do not assume files from that proposal exist; inspect the current workspace before relying on them.]"
         : run.prompt;
+      const runtimeLimits = agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits();
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: stagingPath,
         prompt: runtimePrompt,
         threadId: agentAtStart.codexThreadId,
         limits: {
-          durationMs: (agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits()).maxRunDurationMs ?? this.config.codexTimeoutMs,
-          outputBytes: (agentAtStart.runtimeLimits ?? unlimitedRuntimeLimits()).maxRunOutputBytes ?? this.config.codexMaxOutputBytes,
+          durationMs: runtimeLimits.maxRunDurationMs ?? this.config.codexTimeoutMs,
+          outputBytes: runtimeLimits.maxRunOutputBytes ?? this.config.codexMaxOutputBytes,
+          cpus: runtimeLimits.maxRunCpus ?? this.config.containerCpuLimit,
+          memoryMb: runtimeLimits.maxRunMemoryMb ?? this.config.containerMemoryMb,
+          processes: runtimeLimits.maxRunProcesses ?? this.config.containerPidsLimit,
         },
       });
       const changes = await detectWorkspaceChanges(agentAtStart.workspacePath, stagingPath);
@@ -430,9 +468,14 @@ export class AgentService {
       else if (!changes.length || disposition === "deny") await discardStagingWorkspace(stagingPath);
     } catch (error) {
       const completedAt = now();
-      const cancelled = error instanceof RunCancelledError;
-      const terminated = error instanceof RuntimeLimitError;
-      const termination = terminated ? { reason: error.reason, limit: error.limit, observed: error.observed } : null;
+      const operatorKill = error instanceof RunCancelledError && this.operatorKillRequests.has(agentAtStart.id);
+      const cancelled = error instanceof RunCancelledError && !operatorKill;
+      const runtimeLimit = error instanceof RuntimeLimitError;
+      const terminated = runtimeLimit || operatorKill;
+      const contained = cancelled || terminated;
+      const termination: RuntimeTerminationDetail | null = runtimeLimit
+        ? { reason: error.reason, limit: error.limit, observed: error.observed }
+        : operatorKill ? { reason: "operator_kill", limit: 0, observed: 0 } : null;
       const message = termination ? runtimeTerminationMessage(termination) : error instanceof Error ? error.message : String(error);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
@@ -445,12 +488,20 @@ export class AgentService {
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled || terminated ? "ready" : "error";
+            agent.status = operatorKill ? "stopped" : contained ? "ready" : "error";
           }
-          agent.lastError = cancelled || terminated ? null : message;
+          agent.lastError = contained ? null : message;
           agent.updatedAt = completedAt;
         }
-        if (termination && storedRun && agent) recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
+        if (termination && storedRun && agent) {
+          recordRuntimeTermination(database, agent, storedRun, termination, completedAt);
+          if (termination.reason !== "operator_kill") {
+            maybeQuarantine(database, agent, {
+              threshold: this.config.runtimeQuarantineThreshold,
+              windowMs: this.config.runtimeQuarantineWindowMs,
+            }, completedAt);
+          }
+        }
       });
       await discardStagingWorkspace(stagingPath);
     }

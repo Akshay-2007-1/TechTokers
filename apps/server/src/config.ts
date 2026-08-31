@@ -29,6 +29,10 @@ const envSchema = z.object({
     .default("2g"),
   CONTAINER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   CONTAINER_USER: z.string().optional(),
+  // Auto-quarantine: stop an Agent once it produces this many runtime
+  // terminations (duration/output kills) inside the rolling window.
+  RUNTIME_QUARANTINE_THRESHOLD: z.coerce.number().int().min(1).max(100).default(3),
+  RUNTIME_QUARANTINE_WINDOW_MS: z.coerce.number().int().min(1_000).default(600_000),
   RUNTIME_INSTANCE_ID: z
     .string()
     .trim()
@@ -52,6 +56,23 @@ const envSchema = z.object({
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
+
+/** Convert a Docker-style memory string ("2g", "512m") to whole megabytes. */
+export function memoryStringToMb(value: string): number {
+  const match = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value.trim());
+  if (!match) return 2048;
+  const amount = Number(match[1]);
+  const unit = match[2]!.toLowerCase();
+  const mb =
+    unit === "g"
+      ? amount * 1024
+      : unit === "m"
+        ? amount
+        : unit === "k"
+          ? amount / 1024
+          : amount / (1024 * 1024);
+  return Math.max(1, Math.round(mb));
+}
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
@@ -85,7 +106,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerRuntimeImage: env.CONTAINER_RUNTIME_IMAGE,
     containerCpuLimit: env.CONTAINER_CPU_LIMIT,
     containerMemoryLimit: env.CONTAINER_MEMORY_LIMIT,
+    containerMemoryMb: memoryStringToMb(env.CONTAINER_MEMORY_LIMIT),
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
+    runtimeQuarantineThreshold: env.RUNTIME_QUARANTINE_THRESHOLD,
+    runtimeQuarantineWindowMs: env.RUNTIME_QUARANTINE_WINDOW_MS,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,

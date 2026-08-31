@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentBudgetPolicy,
   AgentBudgetStatus,
+  AgentRuntimeLimits,
   AgentRun,
   GovernanceEvent,
   Message,
@@ -25,6 +26,11 @@ const emptyForm = {
   maxRuns: "",
   maxTotalTokens: "",
   maxPromptChars: "",
+  maxRunSeconds: "",
+  maxRunOutputKb: "",
+  maxRunCpus: "",
+  maxRunMemoryMb: "",
+  maxRunProcesses: "",
   workspaceApprovalMode: "review" as "auto" | "review",
 };
 
@@ -51,7 +57,26 @@ function agentPayloadFromForm(form: typeof emptyForm) {
     instructions: form.instructions,
     budgetPolicy: budgetPolicyFromForm(form),
     maxPromptChars: form.maxPromptChars === "" ? null : Number(form.maxPromptChars),
+    runtimeLimits: runtimeLimitsFromForm(form),
     workspaceApprovalMode: form.workspaceApprovalMode,
+  };
+}
+
+function runtimeLimitsFromForm(form: typeof emptyForm): AgentRuntimeLimits {
+  const optionalNumber = (label: string, raw: string, min: number, max: number, scale = 1) => {
+    if (raw.trim() === "") return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(label + " must be positive, or blank to use the server default.");
+    return Math.min(max, Math.max(min, Math.round(value * scale)));
+  };
+  const cpus = form.maxRunCpus.trim() === "" ? null : Number(form.maxRunCpus);
+  if (cpus !== null && (!Number.isFinite(cpus) || cpus <= 0)) throw new Error("Max Run CPUs must be positive, or blank to use the server default.");
+  return {
+    maxRunDurationMs: optionalNumber("Max Run duration", form.maxRunSeconds, 1_000, 3_600_000, 1_000),
+    maxRunOutputBytes: optionalNumber("Max Run output", form.maxRunOutputKb, 1_024, 67_108_864, 1_024),
+    maxRunCpus: cpus === null ? null : Math.min(64, Math.max(0.1, cpus)),
+    maxRunMemoryMb: optionalNumber("Max Run memory", form.maxRunMemoryMb, 64, 131_072),
+    maxRunProcesses: optionalNumber("Max Run processes", form.maxRunProcesses, 16, 16_384),
   };
 }
 
@@ -126,6 +151,18 @@ function BudgetFields({
       </label>
     </div>
   );
+}
+
+function RuntimeLimitFields({ form, setForm, defaults }: { form: typeof emptyForm; setForm: (next: typeof emptyForm) => void; defaults?: SystemInfo["runtimeDefaults"] }) {
+  const placeholder = (value: number | undefined, scale = 1) => value === undefined ? "server default" : String(Math.round(value / scale));
+  return <div className="form-grid budget-fields">
+    <p className="field-hint" style={{ gridColumn: "1 / -1", margin: 0 }}>Blank inherits the server default shown in grey; it is not unlimited.</p>
+    <label>Max Run duration, seconds (optional)<input type="number" min="1" max="3600" placeholder={placeholder(defaults?.maxRunDurationMs, 1000)} value={form.maxRunSeconds} onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })} /></label>
+    <label>Max Run output, KB (optional)<input type="number" min="1" max="65536" placeholder={placeholder(defaults?.maxRunOutputBytes, 1024)} value={form.maxRunOutputKb} onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })} /></label>
+    <label>Max Run CPUs (container only)<input type="number" min="0.1" max="64" step="0.1" placeholder={placeholder(defaults?.maxRunCpus)} value={form.maxRunCpus} onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })} /></label>
+    <label>Max Run memory, MB (container only)<input type="number" min="64" max="131072" placeholder={placeholder(defaults?.maxRunMemoryMb)} value={form.maxRunMemoryMb} onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })} /></label>
+    <label>Max Run processes (container only)<input type="number" min="16" max="16384" placeholder={placeholder(defaults?.maxRunProcesses)} value={form.maxRunProcesses} onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })} /></label>
+  </div>;
 }
 
 export default function App() {
@@ -259,6 +296,11 @@ export default function App() {
             : String(selected.budgetPolicy.maxTotalTokens),
         maxPromptChars:
           selected.maxPromptChars === null ? "" : String(selected.maxPromptChars),
+        maxRunSeconds: selected.runtimeLimits.maxRunDurationMs === null ? "" : String(Math.round(selected.runtimeLimits.maxRunDurationMs / 1000)),
+        maxRunOutputKb: selected.runtimeLimits.maxRunOutputBytes === null ? "" : String(Math.round(selected.runtimeLimits.maxRunOutputBytes / 1024)),
+        maxRunCpus: selected.runtimeLimits.maxRunCpus === null ? "" : String(selected.runtimeLimits.maxRunCpus),
+        maxRunMemoryMb: selected.runtimeLimits.maxRunMemoryMb === null ? "" : String(selected.runtimeLimits.maxRunMemoryMb),
+        maxRunProcesses: selected.runtimeLimits.maxRunProcesses === null ? "" : String(selected.runtimeLimits.maxRunProcesses),
         workspaceApprovalMode: selected.workspaceApprovalMode,
       });
     }
@@ -324,6 +366,7 @@ export default function App() {
       await api.updateAgent(selected.id, {
         name: selected.name, description: selected.description, instructions: selected.instructions,
         budgetPolicy: selected.budgetPolicy, maxPromptChars: selected.maxPromptChars, workspaceApprovalMode,
+        runtimeLimits: selected.runtimeLimits,
       });
       setForm({ ...form, workspaceApprovalMode });
       await refreshAgents();
@@ -346,6 +389,14 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const killAgent = async () => {
+    if (!selected || !window.confirm("Kill force-terminates a running task and stops this Agent. Use Stop for an ordinary pause.")) return;
+    setBusy(true); setError(null);
+    try { await api.killAgent(selected.id); await Promise.all([refreshAgents(), refreshBudget(selected.id)]); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
   };
 
   const deleteAgent = async () => {
@@ -587,6 +638,7 @@ export default function App() {
                 >
                   {selected.status === "stopped" ? "Start" : "Stop"}
                 </button>
+                <button className="button button-danger" onClick={killAgent} disabled={busy || selected.status === "stopped"} title="Kill is the containment action; it terminates an active Run and records an operator-kill audit event.">Kill</button>
                 <button
                   className="button button-danger"
                   onClick={deleteAgent}
@@ -667,6 +719,7 @@ export default function App() {
                   />
                 </label>
                 <BudgetFields form={form} setForm={setForm} />
+                <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -893,6 +946,7 @@ export default function App() {
               />
             </label>
             <BudgetFields form={form} setForm={setForm} />
+            <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
             <div className="modal-footer">
               <button
                 type="button"

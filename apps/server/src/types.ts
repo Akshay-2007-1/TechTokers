@@ -2,7 +2,7 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type WorkspaceApprovalMode = "auto" | "review";
 export type RunStatus = "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "denied" | "terminated";
 export type MessageRole = "user" | "assistant";
-export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded";
+export type RuntimeTerminationReason = "duration_exceeded" | "output_exceeded" | "operator_kill";
 
 export interface Agent {
   id: string;
@@ -63,7 +63,13 @@ export interface AgentBudgetPolicy {
   maxRuns: number | null;
   maxTotalTokens: number | null;
 }
-export interface AgentRuntimeLimits { maxRunDurationMs: number | null; maxRunOutputBytes: number | null; }
+export interface AgentRuntimeLimits {
+  maxRunDurationMs: number | null;
+  maxRunOutputBytes: number | null;
+  maxRunCpus?: number | null | undefined;
+  maxRunMemoryMb?: number | null | undefined;
+  maxRunProcesses?: number | null | undefined;
+}
 export interface RuntimeTerminationDetail { reason: RuntimeTerminationReason; limit: number; observed: number; }
 
 export type AdmissionReason =
@@ -85,6 +91,9 @@ export interface AppliedResourceLimits {
   maxInputCharacters: number | null;
   maxRunDurationMs: number | null;
   maxRunOutputBytes: number | null;
+  maxRunCpus: number | null;
+  maxRunMemoryMb: number | null;
+  maxRunProcesses: number | null;
 }
 
 export interface AdmissionDecision {
@@ -99,7 +108,9 @@ export type GovernanceEventName =
   | "resource_governance.admission"
   | "resource_governance.policy_updated"
   | "resource_governance.usage_reconciled"
-  | "resource_governance.run_terminated";
+  | "resource_governance.run_terminated"
+  | "resource_governance.operator_kill"
+  | "resource_governance.agent_quarantined";
 
 export interface GovernanceEvent {
   id: string;
@@ -107,13 +118,13 @@ export interface GovernanceEvent {
   runId: string | null;
   event: GovernanceEventName;
   decision: AdmissionOutcome | null;
-  reason: AdmissionReason | "policy_updated" | "usage_reconciled" | "run_terminated";
+  reason: AdmissionReason | "policy_updated" | "usage_reconciled" | "run_terminated" | "operator_kill" | "agent_quarantined";
   observedUsage: ResourceObservedUsage;
   appliedLimits: AppliedResourceLimits;
   runtimeInvoked: boolean;
   actualTokensConsumed: number | null;
   previousLimits?: AppliedResourceLimits | undefined;
-  actor?: "local_operator" | undefined;
+  actor?: "local_operator" | "system" | undefined;
   runtimeTermination?: RuntimeTerminationDetail | undefined;
   createdAt: string;
 }
@@ -166,7 +177,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
-  limits?: { durationMs: number; outputBytes: number } | undefined;
+  limits?: { durationMs: number; outputBytes: number; cpus?: number; memoryMb?: number; processes?: number } | undefined;
 }
 
 export interface AgentRunner {
