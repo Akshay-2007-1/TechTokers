@@ -1,297 +1,337 @@
 # Volc Agent Launchpad
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
-
-Run it locally with Docker, Colima, or rootless Podman, or deploy it to
-Volcengine ECS.
+Volc Agent Launchpad is a TikTok TechJam 2026 Track 1 proof of concept for
+running coding Agents with a governable control plane. It combines a React
+Playground, a Fastify API, persistent Agent sessions, Codex CLI, and BytePlus
+ModelArk—while keeping model filesystem changes as backend-verified proposals
+until policy permits them to reach the persistent Agent workspace.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user POC, not a production multi-tenant service. Do not use
+> production credentials or sensitive data. The API has optional shared-token
+> protection, not individual identity or role-based approval.
 
-## Screenshots
+![Agent Playground](docs/assets/playground.jpg)
 
-### Agent Playground
+## What this project demonstrates
 
-![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
+- **Persistent Agents:** create, edit, start, stop, and continue multi-turn
+  Codex sessions from the browser.
+- **Pre-Run Resource Governance:** optional maximum prompt length, admitted
+  Run count, and cumulative model-token budget. The trusted backend decides
+  before a Runtime starts.
+- **Runtime Governance:** per-Agent duration and output limits, container CPU,
+  memory, and PID caps, Stop versus Kill, and repeated-termination quarantine.
+- **Transactional Workspace Protection:** Codex works in a staging copy, not
+  the persistent Agent workspace. The backend computes SHA-256 filesystem
+  evidence, then applies approved changes transactionally with backups and
+  rollback.
+- **Review and Auto modes:** Review asks for a decision on every eligible diff.
+  Auto applies only ordinary code/document changes according to deterministic
+  backend rules; risky changes still escalate for review.
+- **Restart-aware evidence:** Runs, messages, governance events, change sets,
+  and nonterminal transaction recovery state persist locally.
 
-### Create an Agent
+## Quick start: local POC
 
-![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
+### Requirements
 
-## Features
+- Node.js 22.9 or later
+- npm 10 or later
+- One running container engine: Docker, Colima, or rootless Podman
+- A BytePlus ModelArk API key and a Responses-compatible endpoint/model ID
 
-- React and TypeScript Web UI
-- Agent create, edit, start, stop, delete, and multi-turn chat
-- Fastify control plane with asynchronous Run state
-- Persistent Agent workspaces and Codex sessions
-- Transactional workspace proposals: source changes can auto-apply in Auto
-  mode, while Review mode keeps every diff staged for an explicit decision
-- Disposable Docker, Colima, or Podman container for each local turn
-- Docker and Terraform deployment paths for Volcengine ECS
+Codex CLI is included in the disposable Runtime image; it is not required on
+the host for this POC path.
 
-## Requirements
-
-- Node.js 22.9+
-- npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
-
-Codex CLI is included in the Runtime image and is not required on the host.
-
-## Local browser SOP
-
-### 1. Check the local tools
-
-Install Node.js 22+ and one supported container engine, then verify them:
-
-```bash
-node --version
-npm --version
-docker --version        # Docker Desktop, Docker Engine, or Colima
-podman --version        # Use this instead when running Podman
-```
-
-Only one container engine is required. Codex CLI is already included in the
-Runtime image.
-
-### 2. Clone the repository
+### 1. Clone and enter the repository
 
 ```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
+git clone https://github.com/Akshay-2007-1/TechTokers.git
+cd TechTokers
 ```
 
-Skip this step when already working from the repository root.
+### 2. Export ModelArk settings in the current shell
+
+Use your own values. Do not put real credentials in Git, screenshots, issue
+comments, or prompts.
+
+```bash
+export ARK_API_KEY='your-byteplus-ark-api-key'
+export ARK_MODEL='your-responses-compatible-endpoint-id'
+export ARK_BASE_URL='https://ark.ap-southeast.bytepluses.com/api/v3'
+```
+
+`ARK_BASE_URL` is important when your endpoint is outside the default Beijing
+region. The exported variables exist only in this shell session; open a new
+terminal and export them again, or load them from a local ignored `.env` file.
 
 ### 3. Start the POC
 
 ```bash
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
 npm run poc
 ```
 
-The first run installs Node.js dependencies and builds the Runtime image. The
-script automatically selects Docker, Colima, or Podman.
+The command:
 
-### 4. Open the browser
+1. Checks for Docker, Colima, or Podman.
+2. Installs dependencies with `npm ci` when `node_modules` is absent.
+3. Builds the disposable Codex Runtime image.
+4. Starts the React/Fastify application at <http://localhost:3000>.
+5. Runs each Agent turn in a disposable container with staging mounted at
+   `/workspace`.
 
-Visit <http://localhost:3000>, or open it from the terminal:
+Open <http://localhost:3000>. Press `Ctrl+C` in the startup terminal to stop
+the control plane. Agent metadata, sessions, and persistent workspaces remain;
+the local POC script removes this instance's leftover Runtime containers.
+
+### Optional local `.env` loading
+
+The repository ignores `.env`. If you prefer local file-based configuration,
+create it from the example and source it into your current shell:
 
 ```bash
-open http://localhost:3000       # macOS
-xdg-open http://localhost:3000   # Linux desktop
+cp .env.example .env
+# Edit only your local .env with your ModelArk values.
+set -a
+. ./.env
+set +a
+npm run poc
 ```
 
-In the Web UI:
+Do not commit `.env`.
 
-1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
-3. Select **Create Agent** again.
-4. Enter a task in the Playground, for example:
+### Select an engine or local state location
+
+```bash
+# Force rootless Podman instead of Docker/Colima.
+export CONTAINER_ENGINE=podman
+
+# Keep POC metadata, workspaces, and Codex-home state somewhere explicit.
+export LOCAL_POC_DATA_ROOT="$PWD/.local"
+
+npm run poc
+```
+
+Default persistent state is `~/.volc-agent-launchpad/` on macOS and `.local/`
+in the repository on Linux. See [Local POC details](docs/LOCAL_POC.md),
+including rootless Podman setup and container-mount troubleshooting.
+
+## Use the Playground
+
+1. Open <http://localhost:3000> and choose **Create Agent**.
+2. Give it a name, short description, and system instructions describing the
+   coding task it should perform.
+3. Select a workspace mode:
+   - **Review** — every eligible filesystem diff waits for your decision.
+   - **Auto** — ordinary code/document diffs can apply automatically; risky
+     changes still wait for review.
+4. Optionally set resource and Runtime limits in Agent configuration.
+5. Send a message in the Playground. The Run status, messages, governance
+   evidence, and any proposal appear in the Agent view.
+
+The mode selector near the input controls the selected Agent's workspace policy
+and is disabled while that Agent has an active Run.
+
+### Stop versus Kill
+
+- **Stop** requests ordinary cancellation and leaves the Agent stopped.
+- **Kill** is the containment control. It force-terminates an active Run,
+  records a termination event, and leaves the Agent stopped until you start it
+  again.
+
+Repeated duration or output-limit terminations can auto-quarantine an Agent.
+Starting it again clears the stopped/error state; prior governance evidence is
+retained.
+
+## Demonstrate the architecture in action
+
+These are manual, reproducible demo flows. They are designed to exercise the
+actual backend boundaries rather than rely on model claims.
+
+### A. Review mode: stage, inspect, approve
+
+1. Create an Agent in **Review** mode.
+2. Prompt it:
 
    ```text
-   Create a TypeScript hello-world CLI, add a test, and run it.
+   Create a file named hello.md that explains this Agent's purpose.
    ```
 
-The Agent can write files, run commands, and continue the same Codex session in
-later messages.
+3. Wait for Run status **Awaiting approval**. The persistent workspace is still
+   unchanged; the shown manifest is derived from a staging copy.
+4. Inspect the create/modify/delete summary and choose **Approve**.
+5. The backend validates the current persistent base and staged SHA-256 hashes,
+   creates a transaction journal/backups, applies the change, and completes the
+   Run. The staged directory is discarded.
 
-### 5. Stop and resume
+### B. Review mode: deny and observe reconciliation feedback
 
-Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
-containers but keeps Agent workspaces and conversations.
+1. Create another Review-mode proposal.
+2. Choose **Deny**.
+3. Send the Agent another message.
 
-- macOS state: `~/.volc-agent-launchpad/`
-- Linux state: `.local/`
-- Custom location: set `LOCAL_POC_DATA_ROOT`
+The backend includes a short platform notice in the next Agent turn explaining
+that the previous proposal was denied and was not applied. This prevents the
+next turn from assuming that its earlier filesystem claim succeeded.
 
-Run the same `npm run poc` command to continue later.
+### C. Auto mode: ordinary change versus escalation
 
-### Select a specific container engine
+1. Switch the Agent to **Auto** mode.
+2. Prompt it to create or edit an ordinary `.ts`, `.tsx`, `.js`, `.py`, `.md`,
+   `.txt`, `.css`, or similar source/document file.
+3. The backend hashes and classifies the diff. Ordinary eligible changes are
+   transactionally applied without a popup.
+4. Next, ask it to delete a file it previously created, or modify a package,
+   lockfile, Docker, Compose, or other non-allowlisted path.
 
-Force Podman when multiple engines are installed:
+Deletion and risky paths are escalated to the same review flow; Auto mode is
+not a model-selected bypass.
 
-```bash
-CONTAINER_ENGINE=podman \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
-```
+### D. Protected files and staging isolation
 
-Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
+1. Ask an Agent to create or edit `.env`.
+2. The persistent `.env` is excluded before staging is copied, so it is not
+   mounted into the Runtime workspace.
+3. Any staging `.env` output is excluded from the manifest and discarded with
+   staging; it must not be treated as a persistent change.
 
-For a clean Linux host, follow the
-[rootless Podman setup](docs/LOCAL_POC.md#rootless-podman-on-linux).
+Other forbidden manifest paths—including `.git`, credential/secret-named
+files, `.pem`, and `.key` files—are backend-denied when they appear in the
+manifest. Symlinks and special files are rejected during manifest processing.
 
-## Docker Compose
+### E. Resource Governance: pre-Run denial
 
-Create and edit the configuration:
+Create an Agent with a deliberately small **Maximum prompt length**, **Maximum
+Runs**, or **Total-token budget**. Then submit a request that exceeds the
+chosen policy.
 
-```bash
-./scripts/bootstrap-local.sh
-```
+Expected behavior:
 
-Required values in `.env`:
+- The backend denies the request before `runner.run()`.
+- Codex is not invoked and no model tokens are intentionally consumed.
+- Budget evidence records the decision without retaining your prompt text.
 
-```dotenv
-ARK_API_KEY=your-ark-api-key
-ARK_MODEL=ep-your-endpoint-id
-APP_AUTH_TOKEN=replace-with-at-least-24-random-characters
-```
+For Run-count policy, an admitted Run consumes a slot even if it later fails or
+is cancelled. A denied Run consumes no slot.
 
-Start the application:
+### F. Runtime containment: Kill and quarantine
 
-```bash
-docker compose up --build
-```
+1. Start a Run that will remain active long enough to observe its running state.
+2. Use **Kill** while it is running.
+3. The Run becomes **Terminated** with an operator-kill reason, and the Agent
+   becomes stopped.
+4. Start the Agent again to use it.
 
-Open <http://localhost:3000>. Stop it without deleting Agent data:
+To demonstrate automatic quarantine, configure a low duration or output limit
+and cause duration/output terminations repeatedly. Operator-initiated Kills do
+not count toward the quarantine threshold.
 
-```bash
-docker compose down
-```
+### G. Restart persistence
 
-## Development
+1. Leave a Review-mode change set pending.
+2. Stop the server with `Ctrl+C` and re-run the same shell exports plus
+   `npm run poc`.
+3. Reload the browser. The pending proposal remains available because change
+   sets are stored in the JSON database.
 
-```bash
-npm install
-cp .env.example .env
-npm install --global @openai/codex@0.111.0
-npm run dev
-```
+If a proposal expires, or is denied, its staging directory is discarded and a
+later Agent turn receives a reconciliation notice. Expiry is reconciled on
+service startup, proposal lookup, or the next message request.
 
-- Web UI: <http://localhost:5173>
-- API: <http://localhost:3000>
-
-Use local paths in `.env` when running outside Docker:
-
-```dotenv
-APP_DATA_DIR=.data
-AGENT_WORKSPACE_ROOT=workspaces
-CODEX_HOME=codex-home
-```
-
-## Deployment
-
-- [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
-- [Complete Volcengine environment with Terraform](docs/DEPLOYMENT.md#terraform-deployment)
-- [Local Docker, Colima, and Podman details](docs/LOCAL_POC.md)
-
-The existing-ECS script deploys from the current source tree:
-
-```bash
-cp .env.example .env.production
-./scripts/deploy-existing-ecs.sh .env.production
-```
-
-The Terraform path provisions VPC, subnet, security group, ECS, and EIP:
-
-```bash
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-./scripts/deploy-volcengine.sh
-```
-
-## Configuration
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ARK_API_KEY` | Required | Ark model API key. |
-| `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
-| `ARK_BASE_URL` | Beijing v3 endpoint | Ark OpenAI-compatible API URL. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
-| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
-| `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
-| `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
-| `WORKSPACE_APPROVAL_TTL_MS` | `86400000` | How long a pending workspace proposal remains reviewable before it is discarded. |
-| `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
-
-See [.env.example](.env.example) for all Runtime and resource-limit options.
-
-## Agent Resource Governance
-
-Each Agent can optionally set a maximum number of Runs, total-token budget,
-and input-character limit. Leave a field blank for unlimited use. The server
-enforces all controls atomically before starting the Codex Runtime; browser
-checks only improve feedback.
-
-- Every admitted Run reserves one Run slot, including a Run that later fails or
-  is cancelled. A denied Run reserves no slot and never invokes the Runtime.
-- Token usage is calculated from persisted Runtime `inputTokens + outputTokens`.
-  Cached-input tokens are informational and are not added a second time.
-- This is admission control, not a per-Run token cap: an admitted Run can take
-  the total above its token limit, after which later Runs are denied.
-
-### Runtime kill switch
-
-Admission control cannot stop a Run that has already started. These
-runtime-side controls contain a Run in progress and expose a `terminated`
-Run state plus a redacted `resource_governance.run_terminated` event:
-
-- **Per-Run duration / output limits** (`maxRunDurationMs`, `maxRunOutputBytes`)
-  kill the Runtime process when a single Run runs too long or floods stdout.
-  Each field is a *maximum*: blank inherits the server-wide default (shown as
-  the field placeholder in the UI), never "unlimited".
-- **Per-Run compute caps** (`maxRunCpus`, `maxRunMemoryMb`, `maxRunProcesses`)
-  are passed to the container engine as `--cpus / --memory / --pids-limit`.
-  Container Runtime only — the local-process Runtime has no cgroup and ignores
-  them, falling back to the server-wide `CONTAINER_*` values.
-- **Operator kill switch** (`POST /api/agents/:id/kill`, the red **Kill**
-  button, enabled while the Agent is `ready` or `busy`). A Run in progress is
-  force-terminated (`terminated`, reason `operator_kill`); with no Run in
-  progress a `resource_governance.operator_kill` control-plane event is recorded
-  instead. Either way the Agent is stopped until an operator starts it again.
-  Use **Stop** for an ordinary pause; **Kill** is the containment action.
-- **Auto-quarantine**: after `RUNTIME_QUARANTINE_THRESHOLD` runtime
-  terminations within `RUNTIME_QUARANTINE_WINDOW_MS` (default 3 in 10 min) the
-  Agent is stopped automatically with a `resource_governance.agent_quarantined`
-  event (actor `system`). Starting the Agent clears it.
-
-Current budget state and redacted admission evidence are available at
-`GET /api/agents/:id/budget`. Governance events contain IDs, limits, counters,
-reason, and timestamp only—never prompts, model output, or credentials. The
-usage labels are current measured state only: unlimited, healthy (<80%),
-warning (80–99%), or exhausted (100%+); they do not predict a future Run.
-
-See [Resource Governance architecture](docs/RESOURCE_GOVERNANCE.md) for the
-trusted enforcement boundary, evidence model, extension seams, and limitations.
-
-## How it works
+## Architecture at a glance
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
-    Container --> Ark["Volcengine Ark Responses API"]
-    Codex --> Ark
+  B[Browser Playground] --> A[Fastify API / AgentService]
+  A --> G[Admission and Runtime Policy]
+  A <--> J[JSON Store and Evidence]
+  A --> P[Persistent Agent Workspace]
+  P --> S[Staging Copy and SHA-256 Manifest]
+  A --> R[Codex Runner]
+  R --> C[Disposable Runtime Container]
+  C --> M[BytePlus ModelArk]
+  S --> D{Review / Auto Policy}
+  D -->|review or escalation| H[Human decision]
+  D -->|approved or ordinary auto| T[Transaction Applier / Rollback]
+  T --> P
 ```
 
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/`.
+Key guarantees and limits:
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
+- The backend treats staging hashes and manifests—not Agent text—as the source
+  of truth for filesystem proposals.
+- The persistent Agent workspace is not mounted at `/workspace` for a
+  container Run; staging is mounted instead.
+- Approval validates the original base and staged hashes before any persistent
+  mutation. Multi-file apply journals backups, defers deletions, and rolls back
+  earlier operations after a later failure.
+- JSON persistence and admission serialization are **single-process POC**
+  guarantees, not distributed locking.
+- Container CPU/memory/PID caps apply only with `RUNTIME_PROVIDER=container`.
+  The host `local-process` runner is weaker and is not the recommended local
+  POC path.
+- Runtime event parsing retains final output, thread ID, usage, and errors; it
+  does not expose a full tool/command lifecycle.
 
-## Validation
+For the complete implementation audit, including state machines, boundaries,
+test coverage, and residual limitations, see
+[Architecture Audit](docs/ARCHITECTURE_AUDIT.md).
+
+## Configuration reference
+
+| Variable | Typical local POC value | Purpose |
+|---|---|---|
+| `ARK_API_KEY` | Required | ModelArk API key; keep local only. |
+| `ARK_MODEL` | Required | Responses-compatible ModelArk endpoint/model ID. |
+| `ARK_BASE_URL` | Regional `/api/v3` URL | ModelArk endpoint base URL. |
+| `CONTAINER_ENGINE` | `docker` or `podman` | Select local container engine. |
+| `LOCAL_POC_DATA_ROOT` | Optional directory | Persistent local data/workspaces/session root. |
+| `WORKSPACE_APPROVAL_TTL_MS` | `86400000` | Pending-proposal TTL in milliseconds. |
+| `CONTAINER_CPU_LIMIT` | `2` | Default disposable-container CPU cap. |
+| `CONTAINER_MEMORY_LIMIT` | `2g` | Default disposable-container memory cap. |
+| `CONTAINER_PIDS_LIMIT` | `256` | Default disposable-container PID cap. |
+| `RUNTIME_QUARANTINE_THRESHOLD` | `3` | Duration/output termination count before quarantine. |
+| `RUNTIME_QUARANTINE_WINDOW_MS` | `600000` | Rolling quarantine window in milliseconds. |
+| `APP_AUTH_TOKEN` | Optional on local loopback | Shared demo token; use 24+ characters for remote exposure. |
+
+See [.env.example](.env.example) for the full configuration surface. For Docker
+Compose/ECS deployment, see [Deployment](docs/DEPLOYMENT.md). Compose has a
+different runtime profile and should not be confused with the disposable local
+POC container flow.
+
+## Development and validation
+
+For browser/API development:
 
 ```bash
-npm run check
-terraform fmt -check -recursive deploy/volcengine
-docker compose config
+npm install
+npm run dev
 ```
 
-## Documentation
+- Web development server: <http://localhost:5173>
+- API: <http://localhost:3000>
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Local POC](docs/LOCAL_POC.md)
+Run static and unit validation:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+`npm run check` runs all three. At the time of the architecture audit,
+59/60 server tests passed; the output-flood termination test in
+`apps/server/src/codex-runner.test.ts` exceeded Vitest's five-second timeout.
+Do not describe the full suite as green until that test passes in your
+environment.
+
+## Further documentation
+
+- [Complete architecture audit](docs/ARCHITECTURE_AUDIT.md)
+- [Architecture and extension boundaries](docs/ARCHITECTURE.md)
+- [Resource Governance details](docs/RESOURCE_GOVERNANCE.md)
+- [Local POC and rootless Podman](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [Security policy](SECURITY.md)
