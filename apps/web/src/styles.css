@@ -1018,12 +1018,16 @@ textarea:focus {
   display: grid;
   place-items: center;
   padding: 22px;
+  overflow-y: auto;
   background: rgba(26, 26, 24, 0.58);
   backdrop-filter: blur(7px);
 }
 
 .modal {
   width: min(560px, 100%);
+  max-height: calc(100vh - 44px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: 18px;
   background: var(--paper);
@@ -1051,6 +1055,18 @@ textarea:focus {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
+}
+
+@media (max-width: 600px) {
+  .modal-backdrop {
+    padding: 12px;
+    place-items: start center;
+  }
+
+  .modal {
+    max-height: calc(100vh - 24px);
+    padding: 20px;
+  }
 }
 
 @keyframes spin {
