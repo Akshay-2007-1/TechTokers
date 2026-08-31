@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  maybeQuarantine,
+  recordOperatorKill,
   recordRuntimeTermination,
   resourceLimits,
   runtimeTerminationMessage,
   utilizationState,
 } from "./budget-service.js";
-import type { Agent, AgentRun, Database } from "./types.js";
+import type { Agent, AgentRun, Database, GovernanceEvent } from "./types.js";
 
 describe("Resource Governance utilization", () => {
   it.each([
@@ -92,12 +94,112 @@ describe("Runtime governance", () => {
     expect(JSON.stringify(event)).not.toContain("secret-looking");
   });
 
-  it("phrases the two termination reasons for the operator", () => {
+  it("phrases every termination reason for the operator", () => {
     expect(
       runtimeTerminationMessage({ reason: "duration_exceeded", limit: 10_000, observed: 10_400 }),
     ).toContain("10000 ms per-Run time limit");
     expect(
       runtimeTerminationMessage({ reason: "output_exceeded", limit: 4096, observed: 9000 }),
     ).toContain("4096 byte per-Run output limit");
+    expect(
+      runtimeTerminationMessage({ reason: "operator_kill", limit: 0, observed: 0 }),
+    ).toContain("operator kill switch");
+  });
+
+  function terminationEvent(agentId: string, createdAt: string): GovernanceEvent {
+    return {
+      id: createdAt,
+      agentId,
+      runId: null,
+      event: "resource_governance.run_terminated",
+      decision: null,
+      reason: "run_terminated",
+      observedUsage: { runsUsed: 0, tokensUsed: 0, inputCharacters: 0 },
+      appliedLimits: resourceLimits(fakeAgent()),
+      runtimeInvoked: true,
+      actualTokensConsumed: null,
+      runtimeTermination: { reason: "duration_exceeded", limit: 1_000, observed: 1_200 },
+      createdAt,
+    };
+  }
+
+  it("quarantines an Agent once terminations reach the threshold in the window", () => {
+    const agent = fakeAgent();
+    const database: Database = {
+      version: 1,
+      agents: [agent],
+      messages: [],
+      runs: [],
+      governanceEvents: [
+        terminationEvent(agent.id, "2026-01-01T00:00:00.000Z"),
+        terminationEvent(agent.id, "2026-01-01T00:01:00.000Z"),
+        terminationEvent(agent.id, "2026-01-01T00:02:00.000Z"),
+      ],
+    };
+
+    const quarantined = maybeQuarantine(
+      database,
+      agent,
+      { threshold: 3, windowMs: 600_000 },
+      "2026-01-01T00:02:30.000Z",
+    );
+
+    expect(quarantined).toBe(true);
+    expect(agent.status).toBe("stopped");
+    expect(agent.lastError).toContain("Auto-quarantined");
+    const quarantineEvent = database.governanceEvents.find(
+      (event) => event.event === "resource_governance.agent_quarantined",
+    );
+    expect(quarantineEvent).toBeDefined();
+    // Automatic, not operator-driven — the audit record must say so.
+    expect(quarantineEvent?.actor).toBe("system");
+  });
+
+  it("records an operator kill of an idle Agent as a control-plane event", () => {
+    const agent = fakeAgent();
+    const database: Database = {
+      version: 1,
+      agents: [agent],
+      messages: [],
+      runs: [],
+      governanceEvents: [],
+    };
+
+    recordOperatorKill(database, agent, "2026-01-01T00:00:00.000Z");
+
+    const [event] = database.governanceEvents;
+    expect(event).toMatchObject({
+      event: "resource_governance.operator_kill",
+      reason: "operator_kill",
+      runId: null,
+      runtimeInvoked: false,
+      actor: "local_operator",
+    });
+    expect(event?.runtimeTermination).toBeUndefined();
+  });
+
+  it("ignores terminations that fell outside the rolling window", () => {
+    const agent = fakeAgent();
+    const database: Database = {
+      version: 1,
+      agents: [agent],
+      messages: [],
+      runs: [],
+      governanceEvents: [
+        terminationEvent(agent.id, "2026-01-01T00:00:00.000Z"),
+        terminationEvent(agent.id, "2026-01-01T00:00:10.000Z"),
+        terminationEvent(agent.id, "2026-01-01T01:30:00.000Z"),
+      ],
+    };
+
+    const quarantined = maybeQuarantine(
+      database,
+      agent,
+      { threshold: 3, windowMs: 600_000 },
+      "2026-01-01T01:30:05.000Z",
+    );
+
+    expect(quarantined).toBe(false);
+    expect(agent.status).toBe("ready");
   });
 });

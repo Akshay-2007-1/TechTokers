@@ -41,6 +41,9 @@ export function buildContainerRunArgs(
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
+  const cpus = request.limits?.cpus ?? config.containerCpuLimit;
+  const memoryMb = request.limits?.memoryMb ?? config.containerMemoryMb;
+  const pidsLimit = request.limits?.processes ?? config.containerPidsLimit;
   return [
     "run",
     "--rm",
@@ -61,11 +64,11 @@ export function buildContainerRunArgs(
     "--cap-drop",
     "ALL",
     "--cpus",
-    String(config.containerCpuLimit),
+    String(cpus),
     "--memory",
-    config.containerMemoryLimit,
+    memoryMb + "m",
     "--pids-limit",
-    String(config.containerPidsLimit),
+    String(pidsLimit),
     "--user",
     config.containerUser,
     "--env",

@@ -27,6 +27,9 @@ const emptyForm = {
   maxPromptChars: "",
   maxRunSeconds: "",
   maxRunOutputKb: "",
+  maxRunCpus: "",
+  maxRunMemoryMb: "",
+  maxRunProcesses: "",
 };
 
 function budgetPolicyFromForm(form: typeof emptyForm): AgentBudgetPolicy {
@@ -55,9 +58,30 @@ function runtimeLimitsFromForm(form: typeof emptyForm): AgentRuntimeLimits {
     }
     return Math.max(min, Math.round(value * factor));
   };
+  const whole = (label: string, raw: string, min: number, max: number): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(label + " must be a positive number, or blank to use the server default.");
+    }
+    return Math.min(max, Math.max(min, Math.round(value)));
+  };
+  const cpus = (): number | null => {
+    const trimmed = form.maxRunCpus.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error("Max Run CPUs must be a positive number, or blank to use the server default.");
+    }
+    return Math.min(64, Math.max(0.1, value));
+  };
   return {
     maxRunDurationMs: scaled("Max Run duration", form.maxRunSeconds, 1000, 1000),
     maxRunOutputBytes: scaled("Max Run output", form.maxRunOutputKb, 1024, 1024),
+    maxRunCpus: cpus(),
+    maxRunMemoryMb: whole("Max Run memory", form.maxRunMemoryMb, 64, 131_072),
+    maxRunProcesses: whole("Max Run processes", form.maxRunProcesses, 16, 16_384),
   };
 }
 
@@ -148,12 +172,22 @@ function BudgetFields({
 function RuntimeLimitFields({
   form,
   setForm,
+  defaults,
 }: {
   form: typeof emptyForm;
   setForm: (next: typeof emptyForm) => void;
+  defaults?: SystemInfo["runtimeDefaults"];
 }) {
+  // Blank means "inherit the server default", not "unlimited" — show the value
+  // that will actually apply as the input placeholder.
+  const seconds = defaults ? String(Math.round(defaults.maxRunDurationMs / 1000)) : "server default";
+  const outputKb = defaults ? String(Math.round(defaults.maxRunOutputBytes / 1024)) : "server default";
   return (
     <div className="form-grid budget-fields">
+      <p className="field-hint" style={{ gridColumn: "1 / -1", margin: 0 }}>
+        Leave a field blank to inherit the server default (shown as the greyed
+        value). Blank is not unlimited.
+      </p>
       <label>
         Max Run duration, seconds (optional)
         <input
@@ -161,6 +195,7 @@ function RuntimeLimitFields({
           min="1"
           max="3600"
           step="1"
+          placeholder={seconds}
           value={form.maxRunSeconds}
           onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })}
         />
@@ -172,8 +207,45 @@ function RuntimeLimitFields({
           min="1"
           max="65536"
           step="1"
+          placeholder={outputKb}
           value={form.maxRunOutputKb}
           onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run CPUs (optional, container only)
+        <input
+          type="number"
+          min="0.1"
+          max="64"
+          step="0.1"
+          placeholder={defaults ? String(defaults.maxRunCpus) : "server default"}
+          value={form.maxRunCpus}
+          onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run memory, MB (optional, container only)
+        <input
+          type="number"
+          min="64"
+          max="131072"
+          step="1"
+          placeholder={defaults ? String(defaults.maxRunMemoryMb) : "server default"}
+          value={form.maxRunMemoryMb}
+          onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })}
+        />
+      </label>
+      <label>
+        Max Run processes (optional, container only)
+        <input
+          type="number"
+          min="16"
+          max="16384"
+          step="1"
+          placeholder={defaults ? String(defaults.maxRunProcesses) : "server default"}
+          value={form.maxRunProcesses}
+          onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })}
         />
       </label>
     </div>
@@ -307,6 +379,18 @@ export default function App() {
           selected.runtimeLimits.maxRunOutputBytes === null
             ? ""
             : String(Math.round(selected.runtimeLimits.maxRunOutputBytes / 1024)),
+        maxRunCpus:
+          selected.runtimeLimits.maxRunCpus == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunCpus),
+        maxRunMemoryMb:
+          selected.runtimeLimits.maxRunMemoryMb == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunMemoryMb),
+        maxRunProcesses:
+          selected.runtimeLimits.maxRunProcesses == null
+            ? ""
+            : String(selected.runtimeLimits.maxRunProcesses),
       });
     }
   }, [selected]);
@@ -359,6 +443,35 @@ export default function App() {
         await api.stopAgent(selected.id);
       }
       await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const killAgent = async () => {
+    if (!selected) return;
+    if (
+      !window.confirm(
+        "Kill switch for " +
+          selected.name +
+          ".\n\nThis force-terminates any running task (recorded as a " +
+          "terminated Run, reason operator_kill) and stops the Agent until you " +
+          "start it again. Use Stop instead for an ordinary pause.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.killAgent(selected.id);
+      await Promise.all([refreshAgents(), refreshBudget(selected.id)]);
+      if (selectedIdRef.current === selected.id) {
+        const latest = await api.runs(selected.id);
+        setActiveRun(latest.runs[0] ?? null);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -607,6 +720,18 @@ export default function App() {
                 </button>
                 <button
                   className="button button-danger"
+                  onClick={killAgent}
+                  disabled={busy || selected.status === "stopped"}
+                  title={
+                    "Kill switch: force-terminate the active Run (recorded as a " +
+                    "terminated / operator_kill audit event) and stop the Agent. " +
+                    "Stop is the ordinary pause; Kill is the containment action."
+                  }
+                >
+                  Kill
+                </button>
+                <button
+                  className="button button-danger"
                   onClick={deleteAgent}
                   disabled={busy || selected.status === "busy"}
                 >
@@ -685,7 +810,7 @@ export default function App() {
                   />
                 </label>
                 <BudgetFields form={form} setForm={setForm} />
-                <RuntimeLimitFields form={form} setForm={setForm} />
+                <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -895,7 +1020,7 @@ export default function App() {
               />
             </label>
             <BudgetFields form={form} setForm={setForm} />
-            <RuntimeLimitFields form={form} setForm={setForm} />
+            <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
             <div className="modal-footer">
               <button
                 type="button"
