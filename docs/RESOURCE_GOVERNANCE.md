@@ -14,17 +14,27 @@ The team-added Resource Governance component has two enforcement points:
    - *Per-Run duration + output bytes* — the Runner kills the Codex process /
      removes the disposable container; the Agent returns to `ready`. `null`
      falls back to `CODEX_TIMEOUT_MS` / `CODEX_MAX_OUTPUT_BYTES`.
+     Each per-Run limit is a *maximum*, not a target: a blank field inherits the
+     server-wide default (`CODEX_TIMEOUT_MS`, `CODEX_MAX_OUTPUT_BYTES`,
+     `CONTAINER_*`), which the UI shows as the field placeholder. Blank is never
+     "unlimited".
    - *Per-Run compute caps* (`maxRunCpus`, `maxRunMemoryMb`, `maxRunProcesses`)
      — passed to the container engine as `--cpus / --memory / --pids-limit`.
      Container Runtime only; the local-process Runtime has no cgroup and ignores
      them, using the server-wide `CONTAINER_*` values.
-   - *Operator kill switch* (`POST /api/agents/:id/kill`) — force-terminates any
-     active Run (`terminated`, reason `operator_kill`) and stops the Agent until
-     an operator restarts it.
+   - *Operator kill switch* (`POST /api/agents/:id/kill`) — an operator action,
+     available while the Agent is `ready` or `busy` (the Kill button is disabled
+     once the Agent is `stopped`). If a Run is in progress it is force-terminated
+     and recorded via `resource_governance.run_terminated` (`terminated` Run,
+     reason `operator_kill`, actor `local_operator`); with no Run in progress a
+     `resource_governance.operator_kill` control-plane event is written instead —
+     no Run linkage, no `runtimeTermination` detail, since nothing was running.
+     Either way the Agent is stopped until an operator restarts it.
    - *Auto-quarantine* — after `RUNTIME_QUARANTINE_THRESHOLD` runtime
      terminations within `RUNTIME_QUARANTINE_WINDOW_MS` (default 3 / 10 min) the
-     Agent is stopped with a `resource_governance.agent_quarantined` event.
-     Starting the Agent clears it. Operator kills are excluded from the count.
+     Agent is stopped with a `resource_governance.agent_quarantined` event whose
+     actor is `system` (the action is automatic, not operator-driven). Starting
+     the Agent clears it. Operator kills are excluded from the count.
 
 ```mermaid
 flowchart LR
@@ -37,7 +47,7 @@ flowchart LR
   BOX --> ARK["Starter: Ark Responses endpoint"]
   ARK --> RUN --> REC["Team: usage reconciliation evidence"]
   RUN -->|"per-Run time / output / compute limit hit"| KILL["Team: runtime kill switch\nterminate + cleanup + record"]
-  OP["Team: operator kill / auto-quarantine"] --> KILL
+  OP["Team: operator kill (ready/busy)\nauto-quarantine (system)"] --> KILL
   KILL --> EV
   REC --> EV
   EV --> POLL["Starter: frontend polling/status"]
@@ -58,7 +68,7 @@ flowchart LR
 | Container Codex Runtime | `apps/server/src/container-codex-runner.ts`, `ContainerCodexRunner.run()` | workspace/prompt → `docker run ... codex exec --json` | Starter Runtime integration; launches per-turn container. |
 | ModelArk Responses | `config.ts`, `writeCodexConfig()`; generated Codex config | Codex model request → JSON events | Starter provider configuration. The backend never calls the model directly. |
 | Reconciliation | `codex-runner.ts`, `parseCodexEventLine()`; `AgentService.executeRun()` | `turn.completed.usage` → `AgentRun.usage` and usage evidence | Starter event parsing/persistence; team-added reconciliation evidence. |
-| Runtime kill switch | `codex-runner.ts` / `container-codex-runner.ts` `run()`; `AgentService.executeRun()` catch, `killAgent()`; `recordRuntimeTermination()`, `maybeQuarantine()` | `RunnerRequest.limits` / `POST .../kill` → SIGKILL / `docker rm -f` + `RuntimeLimitError` → `terminated` Run + redacted event; repeat terminations → `agent_quarantined` | **Team-added runtime enforcement boundary.** The Runner already had global timeout/output kills; this makes them per-Agent and policy-driven, adds compute caps, an operator kill, and escalating auto-quarantine, and distinguishes a policy kill from a crash. |
+| Runtime kill switch | `codex-runner.ts` / `container-codex-runner.ts` `run()`; `AgentService.executeRun()` catch, `killAgent()`; `recordRuntimeTermination()`, `maybeQuarantine()` | `RunnerRequest.limits` / `POST .../kill` → SIGKILL / `docker rm -f` + `RuntimeLimitError` → `terminated` Run + redacted event; operator kill of an idle Agent → `operator_kill` control-plane event; repeat terminations → `agent_quarantined` (`system` actor) | **Team-added runtime enforcement boundary.** The Runner already had global timeout/output kills; this makes them per-Agent and policy-driven, adds compute caps, an operator kill, and escalating auto-quarantine, and distinguishes a policy kill from a crash. |
 | Frontend status | `App.tsx`, `pollRun()`, `refreshBudget()` | Run/budget API → current measured state | Starter polling; team-added utilization labels. |
 
 A denied input request is recorded inside `JsonStore.mutate()` and then throws
@@ -78,7 +88,7 @@ emits `turn.completed` and are persisted on the completed Run.
 | Backend policy enforcement | All three controls evaluated before Runtime invocation | `AgentService.sendMessage()` | No cross-instance transaction. |
 | Lifecycle updates | queued/running/completed/failed/cancelled/denied/terminated Run states; ready/busy/stopped/error Agent states incl. auto-quarantine | `AgentService.executeRun()`, `maybeQuarantine()` | No background recovery queue. |
 | Recovery/operator control | start/stop/delete, cancellation, restart cleanup, operator kill switch, auto-quarantine on repeat runtime terminations | `AgentService` (`killAgent`, `maybeQuarantine`), `WorkspaceManager` | No administrator console or retry workflow; quarantine window is single-process only. |
-| Identity/authorization | Optional shared application token | `app.ts` auth hook | No user/role identity; event actor is honestly `local_operator`. |
+| Identity/authorization | Optional shared application token | `app.ts` auth hook | No user/role identity; event actor is honestly `local_operator` for operator actions and `system` for automatic ones (quarantine). |
 | Tool/resource policy | Codex workspace sandbox and container limits | `buildCodexArgs()`, `buildContainerRunArgs()` | No enforceable protected-path middleware in this pinned Runtime. |
 | Multi-Agent coordination | Isolated Agent workspaces and per-Agent usage | workspace path + Agent IDs | No delegation, scheduling, or shared governance. |
 

@@ -60,4 +60,46 @@ describe("Container Codex runner", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
   });
+
+  it("applies per-Run compute caps over the server-wide container limits", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_CPU_LIMIT: "4",
+      CONTAINER_MEMORY_LIMIT: "4g",
+      CONTAINER_PIDS_LIMIT: "512",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "work",
+        threadId: null,
+        limits: { durationMs: 1_000, outputBytes: 1_024, cpus: 0.5, memoryMb: 256, processes: 64 },
+      },
+      config,
+    );
+    expect(args[args.indexOf("--cpus") + 1]).toBe("0.5");
+    expect(args[args.indexOf("--memory") + 1]).toBe("256m");
+    expect(args[args.indexOf("--pids-limit") + 1]).toBe("64");
+  });
+
+  it("falls back to the server-wide container limits when a Run sets no caps", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_CPU_LIMIT: "3",
+      CONTAINER_MEMORY_LIMIT: "1536m",
+      CONTAINER_PIDS_LIMIT: "300",
+    });
+    const args = buildContainerRunArgs(
+      { agentId: "agent", workspacePath: "/tmp/workspace", prompt: "work", threadId: null },
+      config,
+    );
+    expect(args[args.indexOf("--cpus") + 1]).toBe("3");
+    expect(args[args.indexOf("--memory") + 1]).toBe("1536m");
+    expect(args[args.indexOf("--pids-limit") + 1]).toBe("300");
+  });
 });

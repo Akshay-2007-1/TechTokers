@@ -4,6 +4,7 @@ import {
   budgetStatus,
   admissionDenialMessage,
   maybeQuarantine,
+  recordOperatorKill,
   recordPolicyUpdate,
   recordRuntimeTermination,
   recordUsageReconciliation,
@@ -157,8 +158,10 @@ export class AgentService {
   /**
    * Operator kill switch: force-terminate any Run in progress and stop the
    * Agent. Unlike stopAgent, an in-flight Run is recorded as `terminated`
-   * (reason `operator_kill`) with a governance event, and the Agent stays
-   * stopped until an operator explicitly starts it again.
+   * (reason `operator_kill`) via `resource_governance.run_terminated`; with no
+   * Run in progress a `resource_governance.operator_kill` control-plane event is
+   * written instead. Either way the Agent stays stopped until an operator
+   * explicitly starts it again.
    */
   async killAgent(id: string): Promise<Agent> {
     this.getAgent(id);
@@ -178,13 +181,7 @@ export class AgentService {
       stored.lastError = null;
       stored.updatedAt = now();
       if (!hadActiveRun) {
-        recordRuntimeTermination(
-          database,
-          stored,
-          null,
-          { reason: "operator_kill", limit: 0, observed: 0 },
-          now(),
-        );
+        recordOperatorKill(database, stored, now());
       }
       return structuredClone(stored);
     });
@@ -328,6 +325,16 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
+      // Active server-wide fallbacks a blank per-Agent runtime limit inherits.
+      runtimeDefaults: {
+        maxRunDurationMs: this.config.codexTimeoutMs,
+        maxRunOutputBytes: this.config.codexMaxOutputBytes,
+        maxRunCpus: this.config.containerCpuLimit,
+        maxRunMemoryMb: this.config.containerMemoryMb,
+        maxRunProcesses: this.config.containerPidsLimit,
+        quarantineThreshold: this.config.runtimeQuarantineThreshold,
+        quarantineWindowMs: this.config.runtimeQuarantineWindowMs,
+      },
     };
   }
 

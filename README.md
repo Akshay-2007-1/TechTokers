@@ -226,23 +226,28 @@ checks only improve feedback.
 
 ### Runtime kill switch
 
-Admission control cannot stop a Run that has already started. Three
+Admission control cannot stop a Run that has already started. These
 runtime-side controls contain a Run in progress and expose a `terminated`
 Run state plus a redacted `resource_governance.run_terminated` event:
 
 - **Per-Run duration / output limits** (`maxRunDurationMs`, `maxRunOutputBytes`)
   kill the Runtime process when a single Run runs too long or floods stdout.
+  Each field is a *maximum*: blank inherits the server-wide default (shown as
+  the field placeholder in the UI), never "unlimited".
 - **Per-Run compute caps** (`maxRunCpus`, `maxRunMemoryMb`, `maxRunProcesses`)
   are passed to the container engine as `--cpus / --memory / --pids-limit`.
   Container Runtime only — the local-process Runtime has no cgroup and ignores
   them, falling back to the server-wide `CONTAINER_*` values.
 - **Operator kill switch** (`POST /api/agents/:id/kill`, the red **Kill**
-  button) force-terminates any active Run and stops the Agent until an
-  operator starts it again.
+  button, enabled while the Agent is `ready` or `busy`). A Run in progress is
+  force-terminated (`terminated`, reason `operator_kill`); with no Run in
+  progress a `resource_governance.operator_kill` control-plane event is recorded
+  instead. Either way the Agent is stopped until an operator starts it again.
+  Use **Stop** for an ordinary pause; **Kill** is the containment action.
 - **Auto-quarantine**: after `RUNTIME_QUARANTINE_THRESHOLD` runtime
   terminations within `RUNTIME_QUARANTINE_WINDOW_MS` (default 3 in 10 min) the
   Agent is stopped automatically with a `resource_governance.agent_quarantined`
-  event. Starting the Agent clears it.
+  event (actor `system`). Starting the Agent clears it.
 
 Current budget state and redacted admission evidence are available at
 `GET /api/agents/:id/budget`. Governance events contain IDs, limits, counters,

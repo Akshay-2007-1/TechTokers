@@ -446,18 +446,22 @@ describe("Agent lifecycle", () => {
     expect(JSON.stringify(events)).not.toContain("go rogue");
   });
 
-  it("records an operator kill even with no Run in progress", async () => {
+  it("records a control-plane operator_kill event when no Run is in progress", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Idle" });
     const killed = await service.killAgent(agent.id);
     expect(killed.status).toBe("stopped");
     const events = service.getBudgetEvents(agent.id);
     expect(events[0]).toMatchObject({
-      event: "resource_governance.run_terminated",
+      event: "resource_governance.operator_kill",
+      reason: "operator_kill",
       runId: null,
       runtimeInvoked: false,
-      runtimeTermination: { reason: "operator_kill" },
+      actor: "local_operator",
     });
+    // Not a runtime termination: no Run linkage, no runtimeTermination detail.
+    expect(events[0]?.runtimeTermination).toBeUndefined();
+    expect(events.some((event) => event.event === "resource_governance.run_terminated")).toBe(false);
   });
 
   it("auto-quarantines an Agent after repeated runtime terminations", async () => {
@@ -490,7 +494,12 @@ describe("Agent lifecycle", () => {
     expect(service.getAgent(agent.id).status).toBe("stopped");
     expect(service.getAgent(agent.id).lastError).toContain("Auto-quarantined");
     const events = service.getBudgetEvents(agent.id);
-    expect(events.some((event) => event.event === "resource_governance.agent_quarantined")).toBe(true);
+    const quarantineEvent = events.find(
+      (event) => event.event === "resource_governance.agent_quarantined",
+    );
+    expect(quarantineEvent).toBeDefined();
+    // Automatic action: the actor is the system, not an operator.
+    expect(quarantineEvent?.actor).toBe("system");
 
     // An operator can clear the quarantine by starting the Agent again.
     const restarted = await service.startAgent(agent.id);

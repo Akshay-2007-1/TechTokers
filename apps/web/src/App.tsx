@@ -172,12 +172,22 @@ function BudgetFields({
 function RuntimeLimitFields({
   form,
   setForm,
+  defaults,
 }: {
   form: typeof emptyForm;
   setForm: (next: typeof emptyForm) => void;
+  defaults?: SystemInfo["runtimeDefaults"];
 }) {
+  // Blank means "inherit the server default", not "unlimited" — show the value
+  // that will actually apply as the input placeholder.
+  const seconds = defaults ? String(Math.round(defaults.maxRunDurationMs / 1000)) : "server default";
+  const outputKb = defaults ? String(Math.round(defaults.maxRunOutputBytes / 1024)) : "server default";
   return (
     <div className="form-grid budget-fields">
+      <p className="field-hint" style={{ gridColumn: "1 / -1", margin: 0 }}>
+        Leave a field blank to inherit the server default (shown as the greyed
+        value). Blank is not unlimited.
+      </p>
       <label>
         Max Run duration, seconds (optional)
         <input
@@ -185,6 +195,7 @@ function RuntimeLimitFields({
           min="1"
           max="3600"
           step="1"
+          placeholder={seconds}
           value={form.maxRunSeconds}
           onChange={(event) => setForm({ ...form, maxRunSeconds: event.target.value })}
         />
@@ -196,6 +207,7 @@ function RuntimeLimitFields({
           min="1"
           max="65536"
           step="1"
+          placeholder={outputKb}
           value={form.maxRunOutputKb}
           onChange={(event) => setForm({ ...form, maxRunOutputKb: event.target.value })}
         />
@@ -207,6 +219,7 @@ function RuntimeLimitFields({
           min="0.1"
           max="64"
           step="0.1"
+          placeholder={defaults ? String(defaults.maxRunCpus) : "server default"}
           value={form.maxRunCpus}
           onChange={(event) => setForm({ ...form, maxRunCpus: event.target.value })}
         />
@@ -218,6 +231,7 @@ function RuntimeLimitFields({
           min="64"
           max="131072"
           step="1"
+          placeholder={defaults ? String(defaults.maxRunMemoryMb) : "server default"}
           value={form.maxRunMemoryMb}
           onChange={(event) => setForm({ ...form, maxRunMemoryMb: event.target.value })}
         />
@@ -229,6 +243,7 @@ function RuntimeLimitFields({
           min="16"
           max="16384"
           step="1"
+          placeholder={defaults ? String(defaults.maxRunProcesses) : "server default"}
           value={form.maxRunProcesses}
           onChange={(event) => setForm({ ...form, maxRunProcesses: event.target.value })}
         />
@@ -439,7 +454,11 @@ export default function App() {
     if (!selected) return;
     if (
       !window.confirm(
-        "Kill switch: force-terminate any running task and stop " + selected.name + "?",
+        "Kill switch for " +
+          selected.name +
+          ".\n\nThis force-terminates any running task (recorded as a " +
+          "terminated Run, reason operator_kill) and stops the Agent until you " +
+          "start it again. Use Stop instead for an ordinary pause.",
       )
     ) {
       return;
@@ -703,7 +722,11 @@ export default function App() {
                   className="button button-danger"
                   onClick={killAgent}
                   disabled={busy || selected.status === "stopped"}
-                  title="Force-terminate the active Run and stop this Agent"
+                  title={
+                    "Kill switch: force-terminate the active Run (recorded as a " +
+                    "terminated / operator_kill audit event) and stop the Agent. " +
+                    "Stop is the ordinary pause; Kill is the containment action."
+                  }
                 >
                   Kill
                 </button>
@@ -787,7 +810,7 @@ export default function App() {
                   />
                 </label>
                 <BudgetFields form={form} setForm={setForm} />
-                <RuntimeLimitFields form={form} setForm={setForm} />
+                <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
                 <div className="panel-footer">
                   <code>{selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -997,7 +1020,7 @@ export default function App() {
               />
             </label>
             <BudgetFields form={form} setForm={setForm} />
-            <RuntimeLimitFields form={form} setForm={setForm} />
+            <RuntimeLimitFields form={form} setForm={setForm} defaults={system?.runtimeDefaults} />
             <div className="modal-footer">
               <button
                 type="button"

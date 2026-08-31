@@ -124,6 +124,7 @@ export type GovernanceEventName =
   | "resource_governance.policy_updated"
   | "resource_governance.usage_reconciled"
   | "resource_governance.run_terminated"
+  | "resource_governance.operator_kill"
   | "resource_governance.agent_quarantined";
 
 export interface GovernanceEvent {
@@ -137,13 +138,14 @@ export interface GovernanceEvent {
     | "policy_updated"
     | "usage_reconciled"
     | "run_terminated"
+    | "operator_kill"
     | "agent_quarantined";
   observedUsage: ResourceObservedUsage;
   appliedLimits: AppliedResourceLimits;
   runtimeInvoked: boolean;
   actualTokensConsumed: number | null;
   previousLimits?: AppliedResourceLimits | undefined;
-  actor?: "local_operator" | undefined;
+  actor?: "local_operator" | "system" | undefined;
   runtimeTermination?: RuntimeTerminationDetail | undefined;
   createdAt: string;
 }

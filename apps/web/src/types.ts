@@ -86,6 +86,16 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export interface RuntimeDefaults {
+  maxRunDurationMs: number;
+  maxRunOutputBytes: number;
+  maxRunCpus: number;
+  maxRunMemoryMb: number;
+  maxRunProcesses: number;
+  quarantineThreshold: number;
+  quarantineWindowMs: number;
+}
+
 export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;
@@ -95,4 +105,5 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  runtimeDefaults?: RuntimeDefaults;
 }

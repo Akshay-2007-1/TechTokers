@@ -183,23 +183,49 @@ export function recordUsageReconciliation(
 export function recordRuntimeTermination(
   database: Database,
   agent: Agent,
-  run: AgentRun | null,
+  run: AgentRun,
   termination: RuntimeTerminationDetail,
   timestamp: string,
 ): void {
   database.governanceEvents.push({
     id: randomUUID(),
     agentId: agent.id,
-    runId: run?.id ?? null,
+    runId: run.id,
     event: "resource_governance.run_terminated",
     decision: null,
     reason: "run_terminated",
-    observedUsage: observedUsage(database, agent, run ? Array.from(run.prompt).length : 0),
+    observedUsage: observedUsage(database, agent, Array.from(run.prompt).length),
     appliedLimits: resourceLimits(agent),
-    runtimeInvoked: run !== null,
-    actualTokensConsumed: run?.usage ? totalTokens(run) : null,
+    runtimeInvoked: true,
+    actualTokensConsumed: run.usage ? totalTokens(run) : null,
     runtimeTermination: termination,
     actor: termination.reason === "operator_kill" ? "local_operator" : undefined,
+    createdAt: timestamp,
+  });
+}
+
+/**
+ * An operator hit the kill switch on an Agent with no Run in progress. This is
+ * a control-plane action, not a Runtime termination, so it gets its own event
+ * name and carries no `runtimeTermination` / Run linkage.
+ */
+export function recordOperatorKill(
+  database: Database,
+  agent: Agent,
+  timestamp: string,
+): void {
+  database.governanceEvents.push({
+    id: randomUUID(),
+    agentId: agent.id,
+    runId: null,
+    event: "resource_governance.operator_kill",
+    decision: null,
+    reason: "operator_kill",
+    observedUsage: observedUsage(database, agent),
+    appliedLimits: resourceLimits(agent),
+    runtimeInvoked: false,
+    actualTokensConsumed: null,
+    actor: "local_operator",
     createdAt: timestamp,
   });
 }
@@ -245,7 +271,7 @@ export function maybeQuarantine(
     appliedLimits: resourceLimits(agent),
     runtimeInvoked: false,
     actualTokensConsumed: null,
-    actor: "local_operator",
+    actor: "system",
     createdAt: timestamp,
   });
   return true;

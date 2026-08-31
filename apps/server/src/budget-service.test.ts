@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   maybeQuarantine,
+  recordOperatorKill,
   recordRuntimeTermination,
   resourceLimits,
   runtimeTerminationMessage,
@@ -146,11 +147,35 @@ describe("Runtime governance", () => {
     expect(quarantined).toBe(true);
     expect(agent.status).toBe("stopped");
     expect(agent.lastError).toContain("Auto-quarantined");
-    expect(
-      database.governanceEvents.some(
-        (event) => event.event === "resource_governance.agent_quarantined",
-      ),
-    ).toBe(true);
+    const quarantineEvent = database.governanceEvents.find(
+      (event) => event.event === "resource_governance.agent_quarantined",
+    );
+    expect(quarantineEvent).toBeDefined();
+    // Automatic, not operator-driven — the audit record must say so.
+    expect(quarantineEvent?.actor).toBe("system");
+  });
+
+  it("records an operator kill of an idle Agent as a control-plane event", () => {
+    const agent = fakeAgent();
+    const database: Database = {
+      version: 1,
+      agents: [agent],
+      messages: [],
+      runs: [],
+      governanceEvents: [],
+    };
+
+    recordOperatorKill(database, agent, "2026-01-01T00:00:00.000Z");
+
+    const [event] = database.governanceEvents;
+    expect(event).toMatchObject({
+      event: "resource_governance.operator_kill",
+      reason: "operator_kill",
+      runId: null,
+      runtimeInvoked: false,
+      actor: "local_operator",
+    });
+    expect(event?.runtimeTermination).toBeUndefined();
   });
 
   it("ignores terminations that fell outside the rolling window", () => {
