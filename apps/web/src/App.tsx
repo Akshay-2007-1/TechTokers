@@ -795,9 +795,19 @@ export default function App() {
                     </div>
                   </article>
                 )}
-                {(activeRun?.status === "failed" || activeRun?.status === "denied") && (
+                {(activeRun?.status === "failed" ||
+                  activeRun?.status === "denied" ||
+                  activeRun?.status === "terminated") && (
                   <article className="run-error">
-                    <strong>{activeRun.status === "denied" ? "Run denied" : "Run failed"}</strong>
+                    <strong>
+                      {activeRun.status === "denied"
+                        ? "Run denied"
+                        : activeRun.status === "terminated"
+                          ? activeRun.terminationReason === "operator_kill"
+                            ? "Run terminated by operator kill switch"
+                            : "Run terminated by the runtime guard"
+                          : "Run failed"}
+                    </strong>
                     <span>{activeRun.error}</span>
                   </article>
                 )}

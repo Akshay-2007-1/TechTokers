@@ -74,6 +74,7 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  terminationReason: RuntimeTerminationReason | null;
   createdAt: string;
 }
 
